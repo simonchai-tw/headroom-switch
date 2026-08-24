@@ -1,0 +1,9 @@
+{
+  "name": "headroom-switch",
+  "private": true,
+  "type": "module",
+  "description": "One-click Headroom toggle for ChatGPT Codex on Windows.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

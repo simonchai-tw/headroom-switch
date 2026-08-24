@@ -7,6 +7,7 @@ This is not Headroom. It is a small WinForms switch that writes
 does, then starts `headroom proxy`.
 
 <p>
+  <a href="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml"><img src="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/windows-PowerShell%205.1-0078D4?style=flat-square" alt="Windows PowerShell 5.1">
   <img src="https://img.shields.io/badge/companion-headroomlabs--ai%2Fheadroom-7f9a86?style=flat-square" alt="Headroom companion">
@@ -16,7 +17,7 @@ does, then starts `headroom proxy`.
 [How it works](#how-it-works) ·
 [Get started](#get-started) ·
 [Profiles](#profiles) ·
-[Related](#related)
+[Credits](#credits)
 
 ---
 
@@ -77,10 +78,13 @@ open **設定** and pick the path. Typical locations: Python `Scripts`, or uv to
 
 Changing profile restarts the proxy. You do not need to restart ChatGPT for that.
 
-## Related
+## Credits
 
-- [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) — the compressor this switch starts
-- ChatGPT Codex reads `%USERPROFILE%\.codex\config.toml`
+Compression is done by [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom)
+(Apache-2.0, Headroom Contributors). Install it separately. This repository only
+toggles Codex config and starts/stops the local proxy.
+
+See [NOTICE](NOTICE).
 
 ## License
 

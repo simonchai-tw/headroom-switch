@@ -1,0 +1,14 @@
+Headroom Switch
+Copyright (c) 2026 Simon
+
+This project is a companion for Headroom. It is not Headroom,
+and it is not affiliated with Headroom Labs.
+
+Headroom
+Copyright 2025 Headroom Contributors
+https://github.com/headroomlabs-ai/headroom
+Licensed under the Apache License 2.0
+
+This switch writes Codex config the way `headroom wrap codex` does,
+then starts `headroom proxy`. You still need to install Headroom
+separately.

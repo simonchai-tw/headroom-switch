@@ -1,9 +1,23 @@
 {
   "name": "headroom-switch",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "One-click Headroom toggle for ChatGPT Codex on Windows.",
+  "author": "Simon",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simonchai-tw/headroom-switch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/simonchai-tw/headroom-switch/issues"
+  },
+  "homepage": "https://github.com/simonchai-tw/headroom-switch#readme",
   "scripts": {
     "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

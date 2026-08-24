@@ -5,6 +5,7 @@
 First public release.
 
 - WinForms toggle for ChatGPT Codex on Windows
-- Writes `openai_base_url`, `model_provider`, websocket flags, and Headroom MCP
+- Writes wrap-equivalent keys: `openai_base_url`, `model_provider`, websocket flags, Headroom MCP
 - Starts / stops `headroom proxy` with speed / balanced / maximum
 - Restores the previous provider on off
+- Companion for [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom); not a fork

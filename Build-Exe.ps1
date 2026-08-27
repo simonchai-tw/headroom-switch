@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 # Build-Exe.ps1 — compile HeadroomSwitch.ps1 into a double-click .exe
-# Run with Windows PowerShell 5.1 (right-click → 使用 PowerShell 執行)
+# Run with Windows PowerShell 5.1
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -16,12 +16,12 @@ $out = Join-Path $here 'HeadroomSwitch.exe'
 $icon = Join-Path $here 'HeadroomSwitch.ico'
 
 if (-not (Test-Path $in)) {
-    Write-Host "找不到 HeadroomSwitch.ps1"
+    Write-Host 'HeadroomSwitch.ps1 not found.'
     pause
     exit 1
 }
 
-Write-Host "正在準備 ps2exe（只需第一次）..."
+Write-Host 'Preparing ps2exe (first run only)...'
 if (-not (Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue)) {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -29,8 +29,8 @@ if (-not (Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue)) {
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
         Install-Module ps2exe -Scope CurrentUser -Force -AllowClobber
     } catch {
-        Write-Host "無法安裝 ps2exe：$($_.Exception.Message)"
-        Write-Host "請改雙擊 HeadroomSwitch.bat 啟動。"
+        Write-Host "Could not install ps2exe: $($_.Exception.Message)"
+        Write-Host 'Use HeadroomSwitch.bat instead.'
         pause
         exit 1
     }
@@ -38,27 +38,27 @@ if (-not (Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue)) {
 
 Import-Module ps2exe -Force
 $params = @{
-    inputFile   = $in
-    outputFile  = $out
-    noConsole   = $true
-    title       = 'Headroom Switch'
-    description = 'Codex GUI 一鍵掛載 Headroom'
-    product     = 'Headroom Switch'
-    version     = '0.1.0'
+    inputFile    = $in
+    outputFile   = $out
+    noConsole    = $true
+    title        = 'Headroom Switch'
+    description  = 'One-click Headroom for Codex / Claude'
+    product      = 'Headroom Switch'
+    version      = '0.2.0'
     requireAdmin = $false
 }
 if (Test-Path $icon) { $params.iconFile = $icon }
 
-Write-Host "編譯中..."
+Write-Host 'Compiling...'
 Invoke-ps2exe @params
 
 if (Test-Path $out) {
-    Write-Host ""
-    Write-Host "完成：$out"
-    Write-Host "以後雙擊 HeadroomSwitch.exe 即可。"
+    Write-Host ''
+    Write-Host "Done: $out"
+    Write-Host 'Double-click HeadroomSwitch.exe next time.'
 } else {
-    Write-Host "編譯失敗。"
+    Write-Host 'Compile failed.'
     exit 1
 }
-Write-Host ""
+Write-Host ''
 pause

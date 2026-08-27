@@ -1,9 +1,9 @@
 {
   "name": "headroom-switch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "One-click Headroom toggle for ChatGPT Codex on Windows.",
+  "description": "One-click Headroom toggle for Codex and Claude (experimental) on Windows.",
   "author": "Simon",
   "license": "MIT",
   "repository": {

@@ -35,7 +35,7 @@ Headroom Switch writes the same keys `headroom wrap codex` injects, including
 Claude Desktop / Cowork is **experimental**. The lamp writes
 `ANTHROPIC_BASE_URL` in `%USERPROFILE%\.claude\settings.json` and adds a
 Headroom MCP server to `claude_desktop_config.json`. Cowork may still ignore
-env and talk to `api.anthropic.com` — use **Savings** after a turn to see if
+env and talk to `api.anthropic.com` — use **Dashboard** after a turn to see if
 any requests arrived.
 
 ## How it works
@@ -72,9 +72,9 @@ Off:
 
 Other settings are left alone. Files are written as UTF-8 without BOM.
 
-The lamp is the on/off control. X hides to the tray (change in Settings).
-Tray **Exit** always stops the proxy and quits. There is no “quit GUI, leave
-proxy running” path.
+The lamp is the on/off control. X follows Settings (default: quit and stop the
+proxy). Tray **Exit** always stops the proxy and quits. There is no “quit GUI,
+leave proxy running” path.
 
 ## Get started
 
@@ -82,9 +82,9 @@ proxy running” path.
 2. Clone this repo (or copy the files in the root)
 3. Double-click `HeadroomSwitch.bat`  
    (`HeadroomSwitch.vbs` if you do not want a console flash)
-4. Pick **Codex** or **Claude EXP**, turn the lamp on with **balanced**
+4. Pick **Codex** or **Claude**, turn the lamp on with **balanced**
 5. Fully quit the target app from the system tray, then open it again
-6. Click **Savings** (`http://127.0.0.1:8787/dashboard`)  
+6. Click **Dashboard** (`http://127.0.0.1:8787/dashboard`)  
    For Codex you want `/v1/responses` or `codex_ws.units_total > 0`, not only `GET /v1/models`  
    For Claude you want Anthropic `/v1/messages` traffic. Zero requests means the GUI ignored env.
 

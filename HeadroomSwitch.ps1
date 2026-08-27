@@ -24,14 +24,14 @@ try { [void][System.Windows.Forms.Application]::SetHighDpiMode('PerMonitorV2') }
 $mutex = New-Object System.Threading.Mutex($false, 'Local\HeadroomSwitchSingleton')
 if (-not $mutex.WaitOne(0, $false)) {
     [void][System.Windows.Forms.MessageBox]::Show(
-        'Headroom Switch is already running.',
-        'Headroom Switch'
+        'Headroom is already running.',
+        'Headroom'
     )
     exit
 }
 
 function C([int]$r, [int]$g, [int]$b) { [System.Drawing.Color]::FromArgb($r, $g, $b) }
-$Col = @{
+$Ui = @{
     Bg       = C 12 13 12
     Elevated = C 20 22 20
     Inset    = C 16 18 16
@@ -43,6 +43,7 @@ $Col = @{
     Accent   = C 197 205 192
     LampOff  = C 58 61 58
     Danger   = C 181 106 94
+    Line     = C 48 52 48
 }
 
 $script:Port = 8787
@@ -54,7 +55,8 @@ $script:IsOn = $false
 $script:Busy = $false
 $script:ProxyPid = 0
 $script:CustomHeadroom = ''
-$script:CloseToTray = $true
+$script:CloseToTray = $false
+$script:LastLampOn = $null
 $script:ReallyExit = $false
 $script:PreviousProvider = $null
 $script:HadProviderLine = $false
@@ -235,8 +237,18 @@ function Read-JsonObject([string]$Path) {
     try { return $raw | ConvertFrom-Json } catch { return New-Object PSObject }
 }
 
+function Test-HasProp($Obj, [string]$Name) {
+    if ($null -eq $Obj) { return $false }
+    return $null -ne $Obj.PSObject.Properties[$Name]
+}
+
+function Get-PropNames($Obj) {
+    if ($null -eq $Obj) { return @() }
+    return @($Obj.PSObject.Properties | ForEach-Object { $_.Name })
+}
+
 function Ensure-Note($Obj, [string]$Name, $Value) {
-    if ($Obj.PSObject.Properties.Name -contains $Name) {
+    if (Test-HasProp $Obj $Name) {
         $Obj.$Name = $Value
     } else {
         $Obj | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
@@ -244,10 +256,10 @@ function Ensure-Note($Obj, [string]$Name, $Value) {
 }
 
 function Get-Note($Obj, [string]$Name) {
-    if ($null -eq $Obj) { return $null }
-    if ($Obj.PSObject.Properties.Name -contains $Name) { return $Obj.$Name }
-    return $null
+    if (-not (Test-HasProp $Obj $Name)) { return $null }
+    return $Obj.$Name
 }
+
 
 function Test-ClaudeEnabled([int]$Port) {
     $obj = Read-JsonObject $script:ClaudeSettingsPath
@@ -300,12 +312,12 @@ function Disable-ClaudeSettings {
     if ($script:ClaudeHadBaseUrl -and $script:ClaudePrevBaseUrl -and ($script:ClaudePrevBaseUrl -notmatch '127\.0\.0\.1:')) {
         Ensure-Note $envObj 'ANTHROPIC_BASE_URL' $script:ClaudePrevBaseUrl
     } else {
-        if ($envObj.PSObject.Properties.Name -contains 'ANTHROPIC_BASE_URL') {
+        if (Test-HasProp $envObj 'ANTHROPIC_BASE_URL') {
             $envObj.PSObject.Properties.Remove('ANTHROPIC_BASE_URL')
         }
     }
-    $envNames = @($envObj.PSObject.Properties.Name)
-    if ($envNames.Count -eq 0 -and $obj.PSObject.Properties.Name -contains 'env') {
+    $envNames = @(Get-PropNames $envObj)
+    if ($envNames.Count -eq 0 -and (Test-HasProp $obj 'env')) {
         $obj.PSObject.Properties.Remove('env')
     }
     Write-Utf8NoBom $script:ClaudeSettingsPath (ConvertTo-PrettyJson $obj)
@@ -343,11 +355,11 @@ function Disable-ClaudeDesktop {
         $obj = Read-JsonObject $path
         $mcp = Get-Note $obj 'mcpServers'
         if ($null -eq $mcp) { continue }
-        if ($mcp.PSObject.Properties.Name -contains 'headroom') {
+        if (Test-HasProp $mcp 'headroom') {
             $mcp.PSObject.Properties.Remove('headroom')
         }
-        $left = @($mcp.PSObject.Properties.Name)
-        if ($left.Count -eq 0 -and $obj.PSObject.Properties.Name -contains 'mcpServers') {
+        $left = @(Get-PropNames $mcp)
+        if ($left.Count -eq 0 -and (Test-HasProp $obj 'mcpServers')) {
             $obj.PSObject.Properties.Remove('mcpServers')
         }
         Write-Utf8NoBom $path (ConvertTo-PrettyJson $obj)
@@ -379,11 +391,11 @@ function Get-ProxyCmd {
     return ($parts -join ' ')
 }
 
-function Get-ProfileHint([string]$UiName) {
-    switch (Normalize-Profile $UiName) {
-        'speed'    { return 'cache — fast, almost no compression' }
-        'maximum'  { return 'token + no CCR — max savings' }
-        default    { return 'token — actual compression (default)' }
+function Get-ProfileHint([string]$Name) {
+    switch (Normalize-Profile $Name) {
+        'speed'    { return 'Fast. Cache first, almost no squeeze.' }
+        'maximum'  { return 'Maximum squeeze. May drop detail.' }
+        default    { return 'Default compression.' }
     }
 }
 
@@ -393,37 +405,37 @@ function Read-AppState {
     if (-not (Test-Path $script:StatePath)) { return }
     try {
         $s = Read-Utf8 $script:StatePath | ConvertFrom-Json
-        if ($s.PSObject.Properties.Name -contains 'port' -and $s.port) {
+        if ((Test-HasProp $s 'port') -and $s.port) {
             $script:Port = [int]$s.port
         }
-        if ($s.PSObject.Properties.Name -contains 'previousProvider') {
+        if (Test-HasProp $s 'previousProvider') {
             $script:PreviousProvider = $s.previousProvider
         }
-        if ($s.PSObject.Properties.Name -contains 'hadProviderLine') {
+        if (Test-HasProp $s 'hadProviderLine') {
             $script:HadProviderLine = [bool]$s.hadProviderLine
         }
-        if ($s.PSObject.Properties.Name -contains 'proxyPid' -and $s.proxyPid) {
+        if ((Test-HasProp $s 'proxyPid') -and $s.proxyPid) {
             $script:ProxyPid = [int]$s.proxyPid
         }
-        if ($s.PSObject.Properties.Name -contains 'customHeadroom' -and $s.customHeadroom) {
+        if ((Test-HasProp $s 'customHeadroom') -and $s.customHeadroom) {
             $script:CustomHeadroom = [string]$s.customHeadroom
         }
-        if ($s.PSObject.Properties.Name -contains 'closeToTray') {
+        if ((Test-HasProp $s 'settingsVersion') -and ([int]$s.settingsVersion -ge 3) -and (Test-HasProp $s 'closeToTray')) {
             $script:CloseToTray = [bool]$s.closeToTray
         }
-        if ($s.PSObject.Properties.Name -contains 'profile' -and $s.profile) {
+        if ((Test-HasProp $s 'profile') -and $s.profile) {
             $script:Profile = Normalize-Profile ([string]$s.profile)
         }
-        if ($s.PSObject.Properties.Name -contains 'targetApp' -and $s.targetApp) {
+        if ((Test-HasProp $s 'targetApp') -and $s.targetApp) {
             $script:TargetApp = Normalize-App ([string]$s.targetApp)
         }
-        if ($s.PSObject.Properties.Name -contains 'previousOpenaiBaseUrl') {
+        if (Test-HasProp $s 'previousOpenaiBaseUrl') {
             $script:PreviousOpenaiBaseUrl = $s.previousOpenaiBaseUrl
         }
-        if ($s.PSObject.Properties.Name -contains 'claudePrevBaseUrl') {
+        if (Test-HasProp $s 'claudePrevBaseUrl') {
             $script:ClaudePrevBaseUrl = $s.claudePrevBaseUrl
         }
-        if ($s.PSObject.Properties.Name -contains 'claudeHadBaseUrl') {
+        if (Test-HasProp $s 'claudeHadBaseUrl') {
             $script:ClaudeHadBaseUrl = [bool]$s.claudeHadBaseUrl
         }
     } catch {}
@@ -438,6 +450,7 @@ function Write-AppState {
         proxyPid              = $script:ProxyPid
         customHeadroom        = $script:CustomHeadroom
         closeToTray           = $script:CloseToTray
+        settingsVersion       = 3
         profile               = $script:Profile
         targetApp             = $script:TargetApp
         claudePrevBaseUrl     = $script:ClaudePrevBaseUrl
@@ -572,194 +585,284 @@ function Restart-ProxyForProfile {
 
 $fontUi = New-Object System.Drawing.Font('Segoe UI', 9.5)
 $fontSm = New-Object System.Drawing.Font('Segoe UI', 8.5)
-$fontTitle = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+$fontTitle = New-Object System.Drawing.Font('Segoe UI', 20, [System.Drawing.FontStyle]::Bold)
 $fontMono = New-Object System.Drawing.Font('Consolas', 8)
 $fontEyebrow = New-Object System.Drawing.Font('Segoe UI', 7.5)
-$fontLamp = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Headroom Switch'
+$form.Text = 'Headroom'
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = New-Object System.Drawing.Size(400, 560)
-$form.BackColor = $Col.Elevated
-$form.ForeColor = $Col.Fg
+$form.ClientSize = New-Object System.Drawing.Size(400, 520)
+$form.BackColor = $Ui.Bg
+$form.ForeColor = $Ui.Fg
 $form.Font = $fontUi
 
-function New-Lbl([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, $Font, $Color) {
+$m = 24
+$cw = 352
+$gap = 8
+$half = [int](($cw - $gap) / 2)
+$gridPad = 4
+$gridGap = 4
+$colW = [int](($cw - 2 * $gridPad - 2 * $gridGap) / 3)
+$gx0 = $gridPad
+$gx1 = $gx0 + $colW + $gridGap
+$gx2 = $gx1 + $colW + $gridGap
+
+function Enable-DoubleBuffer($ctrl) {
+    try {
+        $flags = [System.Reflection.BindingFlags]'NonPublic,Instance'
+        $setStyle = [System.Windows.Forms.Control].GetMethod('SetStyle', $flags)
+        $styles = [System.Windows.Forms.ControlStyles]
+        $combo = $styles::OptimizedDoubleBuffer -bor $styles::AllPaintingInWmPaint -bor $styles::UserPaint -bor $styles::ResizeRedraw
+        if ($setStyle) { [void]$setStyle.Invoke($ctrl, @($combo, $true)) }
+        $prop = [System.Windows.Forms.Control].GetProperty('DoubleBuffered', $flags)
+        if ($prop) { $prop.SetValue($ctrl, $true, $null) }
+    } catch {}
+}
+Enable-DoubleBuffer $form
+
+function New-Card([int]$X, [int]$Y, [int]$W, [int]$H) {
+    $shell = New-Object System.Windows.Forms.Panel
+    $shell.Location = New-Object System.Drawing.Point($X, $Y)
+    $shell.Size = New-Object System.Drawing.Size($W, $H)
+    $shell.BackColor = $Ui.Line
+    Enable-DoubleBuffer $shell
+    $inner = New-Object System.Windows.Forms.Panel
+    $inner.Location = New-Object System.Drawing.Point(1, 1)
+    $inner.Size = New-Object System.Drawing.Size(($W - 2), ($H - 2))
+    $inner.BackColor = $Ui.Elevated
+    Enable-DoubleBuffer $inner
+    [void]$shell.Controls.Add($inner)
+    [void]$form.Controls.Add($shell)
+    return $inner
+}
+
+function New-Lbl([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, $Font, $Ink) {
     $l = New-Object System.Windows.Forms.Label
     $l.Text = $Text
     $l.Location = New-Object System.Drawing.Point($X, $Y)
     $l.Size = New-Object System.Drawing.Size($W, $H)
     $l.Font = $Font
-    $l.ForeColor = $Color
+    $l.ForeColor = $Ink
     $l.BackColor = [System.Drawing.Color]::Transparent
     [void]$form.Controls.Add($l)
     return $l
 }
 
-$lblEyebrow = New-Lbl 'HEADROOM' 20 16 360 16 $fontEyebrow $Col.Subtle
-$lblTitle = New-Lbl 'Saving mode' 20 34 360 30 $fontTitle $Col.Fg
-$lblSub = New-Lbl 'Codex is talking to OpenAI directly.' 20 66 360 36 $fontSm $Col.Muted
+function New-GhostBtn([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $Text
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderColor = $Ui.Line
+    $b.FlatAppearance.BorderSize = 1
+    $b.FlatAppearance.MouseOverBackColor = $Ui.Elevated
+    $b.FlatAppearance.MouseDownBackColor = $Ui.Elevated
+    $b.UseVisualStyleBackColor = $false
+    $b.BackColor = $Ui.Elevated
+    $b.ForeColor = $Ui.Fg
+    $b.Font = $fontSm
+    $b.Location = New-Object System.Drawing.Point($X, $Y)
+    $b.Size = New-Object System.Drawing.Size($W, $H)
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+    [void]$form.Controls.Add($b)
+    return $b
+}
 
+$lblEyebrow = New-Lbl 'CODEX' $m 18 $cw 14 $fontEyebrow $Ui.Subtle
+$lblTitle = New-Lbl 'Headroom' $m 34 $cw 34 $fontTitle $Ui.Fg
+$lblSub = New-Lbl 'Direct to the model. Proxy is off.' $m 72 $cw 22 $fontSm $Ui.Muted
+
+$rowY = 106
 $lamp = New-Object System.Windows.Forms.Panel
-$lamp.Location = New-Object System.Drawing.Point(20, 108)
-$lamp.Size = New-Object System.Drawing.Size(64, 64)
-$lamp.BackColor = $Col.Elevated
+$lampSz = 48
+$lamp.Location = New-Object System.Drawing.Point(($m + 1 + $gx0 + [int](($colW - $lampSz) / 2)), $rowY)
+$lamp.Size = New-Object System.Drawing.Size($lampSz, $lampSz)
+$lamp.BackColor = $Ui.Bg
 $lamp.Cursor = [System.Windows.Forms.Cursors]::Hand
+Enable-DoubleBuffer $lamp
 [void]$form.Controls.Add($lamp)
 
-$lamp.Add_Paint({
-    param($sender, $e)
-    $g = $e.Graphics
+function Write-LampImage {
+    $sz = $lamp.Width
+    if ($sz -le 0) { return }
+    $bmp = New-Object System.Drawing.Bitmap $sz, $sz
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = 'AntiAlias'
-    $g.Clear($Col.Elevated)
+    $g.PixelOffsetMode = 'HighQuality'
+    $g.Clear($Ui.Bg)
     $on = [bool]$script:IsOn
-    $fill = if ($on) { $Col.Save } else { $Col.LampOff }
-    $ring = if ($on) { $Col.Save } else { $Col.Subtle }
+    $fill = if ($on) { $Ui.Save } else { $Ui.LampOff }
+    $ring = if ($on) { $Ui.Save } else { $Ui.Line }
     $brush = New-Object System.Drawing.SolidBrush $fill
-    $pen = New-Object System.Drawing.Pen $ring, 2
-    $g.FillEllipse($brush, 6, 6, 50, 50)
-    $g.DrawEllipse($pen, 6, 6, 50, 50)
-    $core = New-Object System.Drawing.SolidBrush $(if ($on) { $Col.Fg } else { $Col.Inset })
-    $g.FillEllipse($core, 24, 24, 14, 14)
-    $brush.Dispose(); $pen.Dispose(); $core.Dispose()
-})
-
-$appHost = New-Object System.Windows.Forms.Panel
-$appHost.Location = New-Object System.Drawing.Point(96, 108)
-$appHost.Size = New-Object System.Drawing.Size(284, 64)
-$appHost.BackColor = $Col.Inset
-[void]$form.Controls.Add($appHost)
+    $pen = New-Object System.Drawing.Pen $ring, 1
+    $g.FillEllipse($brush, 0, 0, ($sz - 1), ($sz - 1))
+    $g.DrawEllipse($pen, 0, 0, ($sz - 1), ($sz - 1))
+    $core = New-Object System.Drawing.SolidBrush $(if ($on) { $Ui.Fg } else { $Ui.Inset })
+    $c = [int]($sz / 2)
+    $r = 6
+    $g.FillEllipse($core, ($c - $r), ($c - $r), (2 * $r), (2 * $r))
+    $brush.Dispose(); $pen.Dispose(); $core.Dispose(); $g.Dispose()
+    $old = $lamp.BackgroundImage
+    $lamp.BackgroundImage = $bmp
+    $lamp.BackgroundImageLayout = 'Stretch'
+    if ($old) { $old.Dispose() }
+}
 
 $script:AppButtons = @{}
-function New-AppBtn([string]$Id, [string]$Label, [int]$X, [int]$W) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $Label
-    $b.Tag = $Id
-    $b.FlatStyle = 'Flat'
-    $b.FlatAppearance.BorderSize = 0
-    $b.Font = $fontUi
-    $b.Location = New-Object System.Drawing.Point($X, 8)
-    $b.Size = New-Object System.Drawing.Size($W, 48)
-    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $b.Add_Click({
+$script:AppLabels = @{}
+$chipHost = New-Card ($m + $gx1) ($rowY - 1) (2 * $colW + $gridGap + 2) 50
+function New-AppBtn([string]$Id, [string]$Title, [int]$X, [string]$Sub = '') {
+    $p = New-Object System.Windows.Forms.Panel
+    $p.Tag = $Id
+    $p.Location = New-Object System.Drawing.Point($X, 0)
+    $p.Size = New-Object System.Drawing.Size($colW, 48)
+    $p.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $p.BackColor = $Ui.Inset
+    $click = {
         param($sender, $e)
-        Apply-App ([string]$sender.Tag)
-    })
-    [void]$appHost.Controls.Add($b)
-    $script:AppButtons[$Id] = $b
-    return $b
+        $id2 = $sender.Tag
+        if (-not $id2) { $id2 = $sender.Parent.Tag }
+        Apply-App ([string]$id2)
+    }
+    $p.Add_Click($click)
+    if ($Sub) {
+        $t = New-Object System.Windows.Forms.Label
+        $t.Text = $Title
+        $t.Tag = $Id
+        $t.Font = $fontSm
+        $t.TextAlign = 'BottomCenter'
+        $t.Location = New-Object System.Drawing.Point(0, 4)
+        $t.Size = New-Object System.Drawing.Size($colW, 24)
+        $t.BackColor = [System.Drawing.Color]::Transparent
+        $t.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $t.Add_Click($click)
+        [void]$p.Controls.Add($t)
+        $s = New-Object System.Windows.Forms.Label
+        $s.Text = $Sub
+        $s.Tag = $Id
+        $s.Font = $fontEyebrow
+        $s.TextAlign = 'TopCenter'
+        $s.Location = New-Object System.Drawing.Point(0, 28)
+        $s.Size = New-Object System.Drawing.Size($colW, 16)
+        $s.BackColor = [System.Drawing.Color]::Transparent
+        $s.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $s.Add_Click($click)
+        [void]$p.Controls.Add($s)
+        $script:AppLabels[$Id] = @($t, $s)
+    } else {
+        $t = New-Object System.Windows.Forms.Label
+        $t.Text = $Title
+        $t.Tag = $Id
+        $t.Font = $fontUi
+        $t.TextAlign = 'MiddleCenter'
+        $t.Dock = 'Fill'
+        $t.BackColor = [System.Drawing.Color]::Transparent
+        $t.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $t.Add_Click($click)
+        [void]$p.Controls.Add($t)
+        $script:AppLabels[$Id] = @($t)
+    }
+    Enable-DoubleBuffer $p
+    [void]$chipHost.Controls.Add($p)
+    $script:AppButtons[$Id] = $p
+    return $p
 }
-New-AppBtn 'codex' 'Codex' 8 128 | Out-Null
-New-AppBtn 'claude' 'Claude  EXP' 144 132 | Out-Null
+New-AppBtn 'codex' 'Codex' 0 | Out-Null
+New-AppBtn 'claude' 'Claude' ($colW + $gridGap) '(exp.)' | Out-Null
 
-$lblProf = New-Lbl 'Profile' 20 184 80 18 $fontSm $Col.Subtle
-$lblProfHint = New-Lbl 'token — actual compression (default)' 100 184 280 18 $fontSm $Col.Muted
+$lblProf = New-Lbl 'Profile' $m 168 80 16 $fontSm $Ui.Subtle
+$lblProfHint = New-Lbl 'Default compression' ($m + 80) 168 ($cw - 80) 16 $fontSm $Ui.Muted
 $lblProfHint.TextAlign = 'MiddleRight'
 
-$seg = New-Object System.Windows.Forms.Panel
-$seg.Location = New-Object System.Drawing.Point(20, 204)
-$seg.Size = New-Object System.Drawing.Size(360, 32)
-$seg.BackColor = $Col.Inset
-[void]$form.Controls.Add($seg)
+$seg = New-Card $m 188 $cw 40
 
 $script:SegButtons = @{}
+$script:SegLabels = @{}
 function New-SegBtn([string]$Id, [int]$X) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $Id
-    $b.Tag = $Id
-    $b.FlatStyle = 'Flat'
-    $b.FlatAppearance.BorderSize = 0
-    $b.Font = $fontMono
-    $b.Location = New-Object System.Drawing.Point($X, 2)
-    $b.Size = New-Object System.Drawing.Size(116, 28)
-    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $b.Add_Click({
+    $p = New-Object System.Windows.Forms.Panel
+    $p.Tag = $Id
+    $p.Location = New-Object System.Drawing.Point($X, 4)
+    $p.Size = New-Object System.Drawing.Size($colW, 30)
+    $p.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $p.BackColor = $Ui.Inset
+    Enable-DoubleBuffer $p
+    $click = {
         param($sender, $e)
-        Apply-Profile ([string]$sender.Tag)
-    })
-    [void]$seg.Controls.Add($b)
-    $script:SegButtons[$Id] = $b
-    return $b
+        $id2 = $sender.Tag
+        if (-not $id2) { $id2 = $sender.Parent.Tag }
+        Apply-Profile ([string]$id2)
+    }
+    $p.Add_Click($click)
+    $t = New-Object System.Windows.Forms.Label
+    $t.Text = $Id
+    $t.Tag = $Id
+    $t.Font = $fontSm
+    $t.TextAlign = 'MiddleCenter'
+    $t.Dock = 'Fill'
+    $t.BackColor = [System.Drawing.Color]::Transparent
+    $t.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $t.Add_Click($click)
+    [void]$p.Controls.Add($t)
+    [void]$seg.Controls.Add($p)
+    $script:SegButtons[$Id] = $p
+    $script:SegLabels[$Id] = $t
+    return $p
 }
-New-SegBtn 'speed' 4 | Out-Null
-New-SegBtn 'balanced' 122 | Out-Null
-New-SegBtn 'maximum' 240 | Out-Null
+New-SegBtn 'speed' $gx0 | Out-Null
+New-SegBtn 'balanced' $gx1 | Out-Null
+New-SegBtn 'maximum' $gx2 | Out-Null
 
-$status = New-Object System.Windows.Forms.Panel
-$status.Location = New-Object System.Drawing.Point(20, 248)
-$status.Size = New-Object System.Drawing.Size(360, 118)
-$status.BackColor = $Col.Inset
-[void]$form.Controls.Add($status)
+$status = New-Card $m 240 $cw 112
 
 function New-StatusRow([int]$Y, [string]$Label) {
     $dot = New-Object System.Windows.Forms.Panel
-    $dot.Size = New-Object System.Drawing.Size(8, 8)
-    $dot.Location = New-Object System.Drawing.Point(16, ($Y + 8))
-    $dot.BackColor = $Col.LampOff
+    $dot.Size = New-Object System.Drawing.Size(7, 7)
+    $dot.Location = New-Object System.Drawing.Point(14, ($Y + 8))
+    $dot.BackColor = $Ui.LampOff
     [void]$status.Controls.Add($dot)
-    $t = New-Object System.Windows.Forms.Label
-    $t.Location = New-Object System.Drawing.Point(34, $Y)
-    $t.Size = New-Object System.Drawing.Size(310, 18)
-    $t.Font = $fontSm
-    $t.ForeColor = $Col.Fg
-    $t.Text = $Label
-    [void]$status.Controls.Add($t)
+    $tt = New-Object System.Windows.Forms.Label
+    $tt.Location = New-Object System.Drawing.Point(30, $Y)
+    $tt.Size = New-Object System.Drawing.Size(306, 16)
+    $tt.Font = $fontSm
+    $tt.ForeColor = $Ui.Fg
+    $tt.Text = $Label
+    $tt.BackColor = [System.Drawing.Color]::Transparent
+    [void]$status.Controls.Add($tt)
     $d = New-Object System.Windows.Forms.Label
-    $d.Location = New-Object System.Drawing.Point(34, ($Y + 16))
-    $d.Size = New-Object System.Drawing.Size(310, 16)
+    $d.Location = New-Object System.Drawing.Point(30, ($Y + 16))
+    $d.Size = New-Object System.Drawing.Size(306, 15)
     $d.Font = $fontMono
-    $d.ForeColor = $Col.Muted
+    $d.ForeColor = $Ui.Muted
     $d.Text = ''
+    $d.BackColor = [System.Drawing.Color]::Transparent
     [void]$status.Controls.Add($d)
-    return @{ Dot = $dot; Title = $t; Detail = $d }
+    return @{ Dot = $dot; Title = $tt; Detail = $d }
 }
 
-$rowCfg = New-StatusRow 8 'App config'
-$rowPx = New-StatusRow 44 'Headroom proxy'
-$rowBin = New-StatusRow 80 'Headroom binary'
+$rowCfg = New-StatusRow 8 'App'
+$rowPx = New-StatusRow 40 'Proxy'
+$rowBin = New-StatusRow 72 'Binary'
 
-$lblLogH = New-Lbl 'Activity' 20 376 360 16 $fontSm $Col.Subtle
+$lblLogH = New-Lbl 'Log' $m 364 $cw 14 $fontSm $Ui.Subtle
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
 $logBox.ScrollBars = 'Vertical'
-$logBox.BorderStyle = 'None'
-$logBox.BackColor = $Col.Bg
-$logBox.ForeColor = $Col.Muted
+$logBox.BorderStyle = 'FixedSingle'
+$logBox.BackColor = $Ui.Elevated
+$logBox.ForeColor = $Ui.Muted
 $logBox.Font = $fontMono
-$logBox.Location = New-Object System.Drawing.Point(20, 394)
-$logBox.Size = New-Object System.Drawing.Size(360, 64)
+$logBox.Location = New-Object System.Drawing.Point($m, 380)
+$logBox.Size = New-Object System.Drawing.Size($cw, 56)
 $logBox.TabStop = $false
 [void]$form.Controls.Add($logBox)
 
-$btnDash = New-Object System.Windows.Forms.Button
-$btnDash.Text = 'Savings'
-$btnDash.FlatStyle = 'Flat'
-$btnDash.FlatAppearance.BorderColor = $Col.Subtle
-$btnDash.BackColor = $Col.Elevated
-$btnDash.ForeColor = $Col.Fg
-$btnDash.Font = $fontSm
-$btnDash.Location = New-Object System.Drawing.Point(20, 470)
-$btnDash.Size = New-Object System.Drawing.Size(174, 36)
-$btnDash.Cursor = [System.Windows.Forms.Cursors]::Hand
-[void]$form.Controls.Add($btnDash)
+$btnDash = New-GhostBtn 'Dashboard' $m 448 $half 36
+$btnSettings = New-GhostBtn 'Settings' ($m + $half + $gap) 448 $half 36
 
-$btnSettings = New-Object System.Windows.Forms.Button
-$btnSettings.Text = 'Settings'
-$btnSettings.FlatStyle = 'Flat'
-$btnSettings.FlatAppearance.BorderColor = $Col.Subtle
-$btnSettings.BackColor = $Col.Elevated
-$btnSettings.ForeColor = $Col.Fg
-$btnSettings.Font = $fontSm
-$btnSettings.Location = New-Object System.Drawing.Point(206, 470)
-$btnSettings.Size = New-Object System.Drawing.Size(174, 36)
-$btnSettings.Cursor = [System.Windows.Forms.Cursors]::Hand
-[void]$form.Controls.Add($btnSettings)
-
-$lblHint = New-Lbl 'Lamp on = compress. Fully quit Codex / Claude from the tray, then reopen. X hides to tray.' 20 512 360 40 $fontSm $Col.Subtle
+$lblHint = New-Lbl 'Quit Codex or Claude from the tray, then reopen.' $m 492 $cw 20 $fontSm $Ui.Subtle
 
 function Add-Log([string]$Msg) {
     $stamp = Get-Date -Format 'HH:mm:ss'
@@ -769,60 +872,67 @@ function Add-Log([string]$Msg) {
 }
 
 function Set-Lamp($Row, [bool]$On, [string]$Detail) {
-    $Row.Dot.BackColor = $(if ($On) { $Col.Save } else { $Col.LampOff })
-    $Row.Detail.Text = $Detail
+    $c = if ($On) { $Ui.Save } else { $Ui.LampOff }
+    if ($Row.Dot.BackColor.ToArgb() -ne $c.ToArgb()) { $Row.Dot.BackColor = $c }
+    if ($Row.Detail.Text -ne $Detail) { $Row.Detail.Text = $Detail }
 }
 
 function Update-SegVisual {
     foreach ($id in @('speed', 'balanced', 'maximum')) {
         if (-not $script:SegButtons.ContainsKey($id)) { continue }
         $b = $script:SegButtons[$id]
-        if ($id -eq $script:Profile) {
-            $b.BackColor = $Col.Save
-            $b.ForeColor = $Col.SaveFg
-        } else {
-            $b.BackColor = $Col.Inset
-            $b.ForeColor = $Col.Muted
+        $on = ($id -eq $script:Profile)
+        $bg = if ($on) { $Ui.Save } else { $Ui.Inset }
+        $fg = if ($on) { $Ui.SaveFg } else { $Ui.Muted }
+        if ($b.BackColor.ToArgb() -ne $bg.ToArgb()) { $b.BackColor = $bg }
+        if ($script:SegLabels.ContainsKey($id)) {
+            $lb = $script:SegLabels[$id]
+            if ($lb.ForeColor.ToArgb() -ne $fg.ToArgb()) { $lb.ForeColor = $fg }
         }
     }
-    $lblProfHint.Text = Get-ProfileHint $script:Profile
+    $hint = Get-ProfileHint $script:Profile
+    if ($lblProfHint.Text -ne $hint) { $lblProfHint.Text = $hint }
 }
 
 function Update-AppVisual {
     foreach ($id in @('codex', 'claude')) {
         if (-not $script:AppButtons.ContainsKey($id)) { continue }
         $b = $script:AppButtons[$id]
-        if ($id -eq $script:TargetApp) {
-            $b.BackColor = $Col.Save
-            $b.ForeColor = $Col.SaveFg
-        } else {
-            $b.BackColor = $Col.Inset
-            $b.ForeColor = $Col.Muted
+        $on = ($id -eq $script:TargetApp)
+        $bg = if ($on) { $Ui.Save } else { $Ui.Inset }
+        $fg = if ($on) { $Ui.SaveFg } else { $Ui.Muted }
+        if ($b.BackColor.ToArgb() -ne $bg.ToArgb()) { $b.BackColor = $bg }
+        if ($script:AppLabels.ContainsKey($id)) {
+            foreach ($lb in @($script:AppLabels[$id])) {
+                if ($lb.ForeColor.ToArgb() -ne $fg.ToArgb()) { $lb.ForeColor = $fg }
+            }
         }
     }
 }
 
 function Update-ToggleVisual {
-    $lamp.Invalidate()
+    if ($script:LastLampOn -ne $script:IsOn) {
+        $script:LastLampOn = $script:IsOn
+        Write-LampImage
+    }
+    if ($lblTitle.Text -ne 'Headroom') { $lblTitle.Text = 'Headroom' }
     if ($script:TargetApp -eq 'claude') {
-        $lblEyebrow.Text = 'CLAUDE  ·  EXPERIMENTAL'
-        if ($script:IsOn) {
-            $lblTitle.Text = 'Saving mode'
-            $lblSub.Text = 'Claude env + MCP point at the proxy. Fully quit Desktop / Cowork and reopen.'
+        $eye = 'CLAUDE  ·  EXPERIMENTAL'
+        $sub = if ($script:IsOn) {
+            'Proxy is up. Quit Claude from the tray, then reopen.'
         } else {
-            $lblTitle.Text = 'Saving mode'
-            $lblSub.Text = 'Claude is direct. This path is experimental — watch the dashboard.'
+            'Direct path. Confirm in Dashboard after a turn.'
         }
     } else {
-        $lblEyebrow.Text = 'CODEX  ·  HEADROOM'
-        if ($script:IsOn) {
-            $lblTitle.Text = 'Saving mode'
-            $lblSub.Text = 'Requests go through the local compressor, then to the model.'
+        $eye = 'CODEX'
+        $sub = if ($script:IsOn) {
+            'Context is compressed locally, then sent to the model.'
         } else {
-            $lblTitle.Text = 'Saving mode'
-            $lblSub.Text = 'Codex is talking to OpenAI directly.'
+            'Direct to the model. Proxy is off.'
         }
     }
+    if ($lblEyebrow.Text -ne $eye) { $lblEyebrow.Text = $eye }
+    if ($lblSub.Text -ne $sub) { $lblSub.Text = $sub }
 }
 
 function Refresh-Status {
@@ -831,7 +941,8 @@ function Refresh-Status {
     if ($script:TargetApp -eq 'claude') {
         $cfgOn = Test-ClaudeEnabled $script:Port
         $script:IsOn = $cfgOn
-        $rowCfg.Title.Text = 'Claude settings'
+        $cfgTitle = 'Claude settings'
+        if ($rowCfg.Title.Text -ne $cfgTitle) { $rowCfg.Title.Text = $cfgTitle }
         Set-Lamp $rowCfg $cfgOn $(if ($cfgOn) {
             "ANTHROPIC_BASE_URL → 127.0.0.1:$($script:Port)"
         } else { 'Direct (no Headroom env)' })
@@ -840,7 +951,8 @@ function Refresh-Status {
         $cfgOn = Test-CodexEnabled $content $script:Port
         $script:IsOn = $cfgOn
         $base = Read-OpenaiBaseUrl $content
-        $rowCfg.Title.Text = 'Codex config.toml'
+        $cfgTitle = 'Codex config.toml'
+        if ($rowCfg.Title.Text -ne $cfgTitle) { $rowCfg.Title.Text = $cfgTitle }
         Set-Lamp $rowCfg $cfgOn $(if ($cfgOn) {
             if ($base) { "openai_base_url → 127.0.0.1:$($script:Port)" } else { 'model_provider = "headroom"' }
         } else { 'Direct (Headroom not mounted)' })
@@ -885,7 +997,7 @@ function Enable-CurrentAppConfig([string]$Bin) {
         Enable-ClaudeSettings $script:Port
         Add-Log 'Experimental: Headroom MCP in claude_desktop_config.json'
         Enable-ClaudeDesktop $(if ($Bin) { $Bin } else { 'headroom' })
-        Add-Log 'Cowork GUI may ignore env. Check Savings after a turn.'
+        Add-Log 'Cowork GUI may ignore env. Check Dashboard after a turn.'
     } else {
         $content = Read-Utf8 $script:ConfigPath
         $current = Read-ModelProvider $content
@@ -918,7 +1030,7 @@ function Invoke-TurnOn {
         Add-Log 'headroom.exe not found. Config written, proxy not started.'
         [void][System.Windows.Forms.MessageBox]::Show(
             "headroom.exe was not found (Explorer launches often miss PATH).`r`n`r`nOpen Settings and pick the binary.`r`nTypical locations: Python Scripts, or uv tools.`r`n`r`nApp config was still written.",
-            'Headroom Switch'
+            'Headroom'
         )
         Write-AppState
         Refresh-Status
@@ -955,7 +1067,7 @@ function Invoke-Toggle {
         if ($script:IsOn) { Invoke-TurnOff } else { Invoke-TurnOn }
     } catch {
         Add-Log ('Error: ' + $_.Exception.Message)
-        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom Switch')
+        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom')
     } finally {
         $script:Busy = $false
         $lamp.Cursor = [System.Windows.Forms.Cursors]::Hand
@@ -990,7 +1102,7 @@ function Apply-App([string]$Name) {
         Add-Log "Target app: $next"
     } catch {
         Add-Log ('Error: ' + $_.Exception.Message)
-        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom Switch')
+        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom')
     } finally {
         $script:Busy = $false
     }
@@ -1011,8 +1123,8 @@ $lamp.Add_Click({ Invoke-Toggle })
 $btnDash.Add_Click({
     if (-not (Test-PortOpen $script:Port)) {
         [void][System.Windows.Forms.MessageBox]::Show(
-            'Proxy is not running. Turn the lamp on first, then open Savings.',
-            'Headroom Switch'
+            'Proxy is not running. Turn the lamp on first, then open Dashboard.',
+            'Headroom'
         )
         return
     }
@@ -1025,8 +1137,8 @@ function Show-Settings {
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.StartPosition = 'CenterParent'
     $dlg.ClientSize = New-Object System.Drawing.Size(360, 280)
-    $dlg.BackColor = $Col.Elevated
-    $dlg.ForeColor = $Col.Fg
+    $dlg.BackColor = $Ui.Elevated
+    $dlg.ForeColor = $Ui.Fg
     $dlg.Font = $fontUi
     $dlg.MaximizeBox = $false
     $dlg.MinimizeBox = $false
@@ -1035,15 +1147,15 @@ function Show-Settings {
     $l1.Text = 'Proxy port'
     $l1.Location = New-Object System.Drawing.Point(16, 14)
     $l1.Size = New-Object System.Drawing.Size(320, 18)
-    $l1.ForeColor = $Col.Muted
+    $l1.ForeColor = $Ui.Muted
     [void]$dlg.Controls.Add($l1)
 
     $tbPort = New-Object System.Windows.Forms.TextBox
     $tbPort.Text = "$($script:Port)"
     $tbPort.Location = New-Object System.Drawing.Point(16, 34)
     $tbPort.Size = New-Object System.Drawing.Size(328, 26)
-    $tbPort.BackColor = $Col.Bg
-    $tbPort.ForeColor = $Col.Fg
+    $tbPort.BackColor = $Ui.Bg
+    $tbPort.ForeColor = $Ui.Fg
     $tbPort.BorderStyle = 'FixedSingle'
     [void]$dlg.Controls.Add($tbPort)
 
@@ -1051,15 +1163,15 @@ function Show-Settings {
     $l2.Text = 'headroom.exe (blank = auto-detect)'
     $l2.Location = New-Object System.Drawing.Point(16, 68)
     $l2.Size = New-Object System.Drawing.Size(320, 18)
-    $l2.ForeColor = $Col.Muted
+    $l2.ForeColor = $Ui.Muted
     [void]$dlg.Controls.Add($l2)
 
     $tbPath = New-Object System.Windows.Forms.TextBox
     $tbPath.Text = $script:CustomHeadroom
     $tbPath.Location = New-Object System.Drawing.Point(16, 88)
     $tbPath.Size = New-Object System.Drawing.Size(250, 26)
-    $tbPath.BackColor = $Col.Bg
-    $tbPath.ForeColor = $Col.Fg
+    $tbPath.BackColor = $Ui.Bg
+    $tbPath.ForeColor = $Ui.Fg
     $tbPath.BorderStyle = 'FixedSingle'
     [void]$dlg.Controls.Add($tbPath)
 
@@ -1068,8 +1180,8 @@ function Show-Settings {
     $btnBrowse.Location = New-Object System.Drawing.Point(272, 86)
     $btnBrowse.Size = New-Object System.Drawing.Size(72, 28)
     $btnBrowse.FlatStyle = 'Flat'
-    $btnBrowse.BackColor = $Col.Inset
-    $btnBrowse.ForeColor = $Col.Fg
+    $btnBrowse.BackColor = $Ui.Inset
+    $btnBrowse.ForeColor = $Ui.Fg
     $btnBrowse.Add_Click({
         $ofd = New-Object System.Windows.Forms.OpenFileDialog
         $ofd.Filter = 'Executable|*.exe|All|*.*'
@@ -1079,10 +1191,10 @@ function Show-Settings {
     [void]$dlg.Controls.Add($btnBrowse)
 
     $l3 = New-Object System.Windows.Forms.Label
-    $l3.Text = 'Close button (X)'
+    $l3.Text = 'Close button'
     $l3.Location = New-Object System.Drawing.Point(16, 126)
     $l3.Size = New-Object System.Drawing.Size(320, 18)
-    $l3.ForeColor = $Col.Muted
+    $l3.ForeColor = $Ui.Muted
     [void]$dlg.Controls.Add($l3)
 
     $rbTray = New-Object System.Windows.Forms.RadioButton
@@ -1090,15 +1202,15 @@ function Show-Settings {
     $rbTray.Checked = [bool]$script:CloseToTray
     $rbTray.Location = New-Object System.Drawing.Point(16, 146)
     $rbTray.Size = New-Object System.Drawing.Size(320, 22)
-    $rbTray.ForeColor = $Col.Fg
+    $rbTray.ForeColor = $Ui.Fg
     [void]$dlg.Controls.Add($rbTray)
 
     $rbQuit = New-Object System.Windows.Forms.RadioButton
-    $rbQuit.Text = 'Quit and stop proxy'
+    $rbQuit.Text = 'Quit'
     $rbQuit.Checked = -not [bool]$script:CloseToTray
     $rbQuit.Location = New-Object System.Drawing.Point(16, 168)
     $rbQuit.Size = New-Object System.Drawing.Size(320, 22)
-    $rbQuit.ForeColor = $Col.Fg
+    $rbQuit.ForeColor = $Ui.Fg
     [void]$dlg.Controls.Add($rbQuit)
 
     $btnFolder = New-Object System.Windows.Forms.Button
@@ -1106,8 +1218,8 @@ function Show-Settings {
     $btnFolder.Location = New-Object System.Drawing.Point(16, 232)
     $btnFolder.Size = New-Object System.Drawing.Size(120, 32)
     $btnFolder.FlatStyle = 'Flat'
-    $btnFolder.BackColor = $Col.Inset
-    $btnFolder.ForeColor = $Col.Muted
+    $btnFolder.BackColor = $Ui.Inset
+    $btnFolder.ForeColor = $Ui.Muted
     $btnFolder.Add_Click({
         $dir = if ($script:TargetApp -eq 'claude') { $script:ClaudeDir } else { $script:CodexDir }
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -1120,8 +1232,8 @@ function Show-Settings {
     $ok.Location = New-Object System.Drawing.Point(232, 232)
     $ok.Size = New-Object System.Drawing.Size(112, 32)
     $ok.FlatStyle = 'Flat'
-    $ok.BackColor = $Col.Accent
-    $ok.ForeColor = $Col.SaveFg
+    $ok.BackColor = $Ui.Accent
+    $ok.ForeColor = $Ui.SaveFg
     $ok.DialogResult = 'OK'
     [void]$dlg.Controls.Add($ok)
     $dlg.AcceptButton = $ok
@@ -1144,38 +1256,39 @@ $btnSettings.Add_Click({ Show-Settings })
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $bmp = New-Object System.Drawing.Bitmap 16, 16
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.Clear($Col.Bg)
+$g.Clear($Ui.Bg)
 $g.SmoothingMode = 'AntiAlias'
-$brush = New-Object System.Drawing.SolidBrush $Col.Save
+$brush = New-Object System.Drawing.SolidBrush $Ui.Save
 $g.FillEllipse($brush, 2, 4, 12, 8)
-$g.FillEllipse((New-Object System.Drawing.SolidBrush $Col.Fg), 8, 4, 8, 8)
+$g.FillEllipse((New-Object System.Drawing.SolidBrush $Ui.Fg), 8, 4, 8, 8)
 $g.Dispose()
 $notify.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
-$notify.Text = 'Headroom Switch'
+$notify.Text = 'Headroom'
 $notify.Visible = $true
 $form.Icon = $notify.Icon
 
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
-[void]$trayMenu.Items.Add('Show').add_Click({ $form.Show(); $form.WindowState = 'Normal'; $form.Activate() })
+[void]$trayMenu.Items.Add('Show').add_Click({ $form.Visible = $true; $form.WindowState = 'Normal'; $form.Activate() })
 [void]$trayMenu.Items.Add('-')
-[void]$trayMenu.Items.Add('Exit (stop proxy)').add_Click({ Invoke-ExitStopAll })
+[void]$trayMenu.Items.Add('Exit').add_Click({ Invoke-ExitStopAll })
 $notify.ContextMenuStrip = $trayMenu
-$notify.Add_DoubleClick({ $form.Show(); $form.WindowState = 'Normal'; $form.Activate() })
+$notify.Add_DoubleClick({ $form.Visible = $true; $form.WindowState = 'Normal'; $form.Activate() })
+
+function Test-ShouldStayInTray {
+    return [bool]$script:CloseToTray
+}
 
 $form.Add_FormClosing({
     param($src, $e)
     if ($script:ReallyExit) { return }
     if ($script:CloseToTray) {
         $e.Cancel = $true
-        $form.Hide()
-        $notify.ShowBalloonTip(1600, 'Headroom Switch', 'Still in the tray. Saving mode keeps running if the lamp is on.', [System.Windows.Forms.ToolTipIcon]::Info)
-    } else {
-        try {
-            Refresh-Status
-            if ($script:IsOn) { Invoke-TurnOff } else { Stop-HeadroomProxy }
-        } catch {}
-        $script:ReallyExit = $true
+        $src.Visible = $false
+        return
     }
+    try { Stop-HeadroomProxy } catch {}
+    $script:ReallyExit = $true
+    $notify.Visible = $false
 })
 
 $form.Add_FormClosed({
@@ -1185,9 +1298,10 @@ $form.Add_FormClosed({
 })
 
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 2500
+$timer.Interval = 4000
 $timer.Add_Tick({
-    if (-not $script:Busy) { Refresh-Status }
+    if ($script:Busy) { return }
+    try { Refresh-Status } catch {}
 })
 
 Read-AppState
@@ -1198,9 +1312,10 @@ if ($script:IsOn -and -not (Test-PortOpen $script:Port)) {
     Add-Log 'Config is on Headroom but the proxy is down. Starting…'
     try { [void](Start-HeadroomProxy); Write-AppState; Refresh-Status } catch { Add-Log $_.Exception.Message }
 }
-Add-Log 'Ready. Lamp toggles saving mode. Pick Codex or Claude first.'
+Add-Log 'Ready. Lamp turns Headroom on. Pick Codex or Claude first.'
 $timer.Start()
 
-[void]$form.ShowDialog()
+[void][System.Windows.Forms.Application]::Run($form)
 $timer.Stop()
+$notify.Visible = $false
 $notify.Dispose()

@@ -34,3 +34,28 @@ test("disable restores the previous provider and leaves other settings", () => {
   assert.match(off, /personality = "pragmatic"/);
   assert.equal(isHeadroomEnabled(off, 8787), false);
 });
+
+test("disable removes extra keys under [model_providers.headroom]", () => {
+  const dirty = `model_provider = "headroom"
+
+[model_providers.headroom]
+name = "OpenAI via Headroom proxy"
+env_http_headers = { X-Headroom-Base-Url = "https://api.openai.com/v1" }
+http_headers = "keep-me-not"
+
+[other]
+k = 1
+`;
+  const off = disableHeadroom(dirty, "openai");
+  assert.doesNotMatch(off, /env_http_headers/);
+  assert.doesNotMatch(off, /http_headers/);
+  assert.doesNotMatch(off, /model_providers\.headroom/);
+  assert.match(off, /\[other\]/);
+  assert.match(off, /k = 1/);
+});
+
+test("port 8787 does not match 87870 on openai_base_url", () => {
+  const onlyUrl = 'openai_base_url = "http://127.0.0.1:87870/v1"\n';
+  assert.equal(isHeadroomEnabled(onlyUrl, 8787), false);
+  assert.equal(isHeadroomEnabled(onlyUrl, 87870), true);
+});

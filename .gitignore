@@ -3,3 +3,4 @@ HeadroomSwitch.exe
 node_modules/
 .DS_Store
 Thumbs.db
+verify-output.txt

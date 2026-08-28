@@ -1,6 +1,6 @@
 {
   "name": "headroom-switch",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "One-click Headroom toggle for Codex and Claude (experimental) on Windows.",

@@ -1,5 +1,5 @@
 ﻿#requires -Version 5.1
-# Kill-Headroom.ps1 — stop Headroom Switch GUI + proxy, free port 8787
+# Kill-Headroom.ps1 — stop Headroom Switch GUI + headroom proxy
 # Optional:  powershell -File Kill-Headroom.ps1 -RevertClaude
 
 param([switch]$RevertClaude)
@@ -13,6 +13,13 @@ function Stop-PidSafe([int]$ProcessId, [string]$Why) {
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
+function Test-BlobHeadroom([string]$Blob) {
+    if ($Blob -match 'HeadroomSwitch') { return $true }
+    if ($Blob -match '(?i)headroom\.exe') { return $true }
+    if ($Blob -match '(?i)(["'']|\s|^)headroom(\.exe)?(["'']|\s|$)') { return $true }
+    return $false
+}
+
 Write-Host '=== Headroom Switch / proxy ==='
 
 Get-Process -Name 'HeadroomSwitch','headroom' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -23,10 +30,8 @@ $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
 foreach ($p in $procs) {
     if ($p.ProcessId -eq $self) { continue }
     $blob = "$($p.Name) $($p.CommandLine)"
-    if ($blob -match 'HeadroomSwitch(\.ps1|\.exe|\.bat|\.vbs)?' -or $blob -match '(?i)headroom(\.exe)?(\s|$).*proxy' -or $blob -match '(?i)[\\/]headroom(\.exe)?') {
-        if ($p.Name -eq 'powershell.exe' -or $p.Name -eq 'pwsh.exe') {
-            if ($blob -notmatch 'HeadroomSwitch') { continue }
-        }
+    if (Test-BlobHeadroom $blob) {
+        if (($p.Name -eq 'powershell.exe' -or $p.Name -eq 'pwsh.exe') -and ($blob -notmatch 'HeadroomSwitch')) { continue }
         Stop-PidSafe $p.ProcessId $blob.Substring(0, [Math]::Min(120, $blob.Length))
     }
 }
@@ -34,12 +39,17 @@ foreach ($p in $procs) {
 Start-Sleep -Milliseconds 400
 
 $ports = @(8787)
-$statePath = Join-Path $env:USERPROFILE '.codex\headroom-switch-state.json'
-if (Test-Path $statePath) {
-    try {
-        $s = Get-Content -Raw $statePath | ConvertFrom-Json
-        if ($s.port) { $ports += [int]$s.port }
-    } catch {}
+$statePaths = @(
+    (Join-Path $env:LOCALAPPDATA 'HeadroomSwitch\state.json'),
+    (Join-Path $env:USERPROFILE '.codex\headroom-switch-state.json')
+)
+foreach ($statePath in $statePaths) {
+    if (Test-Path $statePath) {
+        try {
+            $s = Get-Content -Raw $statePath | ConvertFrom-Json
+            if ($s.port) { $ports += [int]$s.port }
+        } catch {}
+    }
 }
 $ports = $ports | Select-Object -Unique
 
@@ -50,7 +60,7 @@ foreach ($port in $ports) {
             $listenPid = [int]$Matches[1]
             $wp = Get-CimInstance Win32_Process -Filter "ProcessId=$listenPid" -ErrorAction SilentlyContinue
             $blob = "$($wp.Name) $($wp.CommandLine)"
-            if ($blob -match '(?i)headroom|python|HeadroomSwitch') {
+            if (Test-BlobHeadroom $blob) {
                 Stop-PidSafe $listenPid "LISTEN :$port $blob"
             } else {
                 Write-Host "skip PID $listenPid on :$port (not headroom): $blob"
@@ -80,7 +90,7 @@ if ($RevertClaude) {
 
 Write-Host '=== still alive? ==='
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ProcessId -ne $self -and ("$($_.Name) $($_.CommandLine)" -match '(?i)HeadroomSwitch|headroom')
+    $_.ProcessId -ne $self -and (Test-BlobHeadroom ("$($_.Name) $($_.CommandLine)"))
 } | ForEach-Object {
     Write-Host "STILL RUNNING $($_.ProcessId) $($_.Name) $($_.CommandLine)"
 }

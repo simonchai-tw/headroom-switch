@@ -26,8 +26,14 @@ if (-not (Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue)) {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Install-PackageProvider -Name NuGet -Force -Scope CurrentUser | Out-Null
+        $prevPolicy = 'Untrusted'
+        try { $prevPolicy = (Get-PSRepository -Name PSGallery).InstallationPolicy } catch {}
         Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-        Install-Module ps2exe -Scope CurrentUser -Force -AllowClobber
+        try {
+            Install-Module ps2exe -Scope CurrentUser -Force -AllowClobber
+        } finally {
+            try { Set-PSRepository -Name PSGallery -InstallationPolicy $prevPolicy } catch {}
+        }
     } catch {
         Write-Host "Could not install ps2exe: $($_.Exception.Message)"
         Write-Host 'Use HeadroomSwitch.bat instead.'
@@ -44,7 +50,7 @@ $params = @{
     title        = 'Headroom Switch'
     description  = 'One-click Headroom for Codex / Claude'
     product      = 'Headroom Switch'
-    version      = '0.2.0'
+    version      = '0.2.2'
     requireAdmin = $false
 }
 if (Test-Path $icon) { $params.iconFile = $icon }

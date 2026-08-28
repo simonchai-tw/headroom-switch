@@ -3,7 +3,15 @@
 One-click Headroom on/off for **ChatGPT Codex** and **Claude (experimental)** on Windows.
 
 This is not Headroom. It is a small WinForms lamp that writes the config your
-app actually reads, then starts `headroom proxy`.
+app actually reads, then starts `headroom proxy`. Headroom™ is used here only
+to describe that origin. This project is not affiliated with, endorsed by, or
+sponsored by Headroom Labs.
+
+If you also use [cc-switch](https://github.com/farion1231/cc-switch), it can
+overwrite `~/.claude/settings.json` and wipe `ANTHROPIC_BASE_URL`. Upstream
+Headroom can put it back at runtime with `HEADROOM_CC_SWITCH_RECONCILE=1`
+(off by default). This switch does not replace cc-switch.
+
 
 <p>
   <a href="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml"><img src="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml/badge.svg" alt="CI"></a>

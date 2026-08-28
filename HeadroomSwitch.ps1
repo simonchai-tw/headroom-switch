@@ -22,10 +22,16 @@ Add-Type -AssemblyName System.Drawing
 try { [void][System.Windows.Forms.Application]::SetHighDpiMode('PerMonitorV2') } catch {}
 
 $mutex = New-Object System.Threading.Mutex($false, 'Local\HeadroomSwitchSingleton')
-if (-not $mutex.WaitOne(0, $false)) {
+$script:HasMutex = $false
+try {
+    $script:HasMutex = [bool]$mutex.WaitOne(0, $false)
+} catch [System.Threading.AbandonedMutexException] {
+    $script:HasMutex = $true
+}
+if (-not $script:HasMutex) {
     [void][System.Windows.Forms.MessageBox]::Show(
-        'Headroom is already running.',
-        'Headroom'
+        'Headroom Switch is already running.',
+        'Headroom Switch'
     )
     exit
 }
@@ -46,6 +52,7 @@ $Ui = @{
     Line     = C 48 52 48
 }
 
+$script:AppVersion = '0.2.2'
 $script:Port = 8787
 $script:Profile = 'balanced'
 $script:SegButtons = @{}
@@ -59,10 +66,11 @@ $script:CloseToTray = $false
 $script:LastLampOn = $null
 $script:ReallyExit = $false
 $script:PreviousProvider = $null
-$script:HadProviderLine = $false
 $script:PreviousOpenaiBaseUrl = $null
 $script:ClaudePrevBaseUrl = $null
 $script:ClaudeHadBaseUrl = $false
+$script:HeadroomExeCache = $null
+$script:HeadroomExeCacheAt = [datetime]::MinValue
 
 if ($env:CODEX_HOME -and $env:CODEX_HOME.Trim()) {
     $script:CodexDir = $env:CODEX_HOME.Trim()
@@ -70,7 +78,10 @@ if ($env:CODEX_HOME -and $env:CODEX_HOME.Trim()) {
     $script:CodexDir = Join-Path $env:USERPROFILE '.codex'
 }
 $script:ConfigPath = Join-Path $script:CodexDir 'config.toml'
-$script:StatePath = Join-Path $script:CodexDir 'headroom-switch-state.json'
+$script:AppDataDir = Join-Path $env:LOCALAPPDATA 'HeadroomSwitch'
+if (-not $script:AppDataDir) { $script:AppDataDir = Join-Path $env:USERPROFILE 'AppData\Local\HeadroomSwitch' }
+$script:StatePath = Join-Path $script:AppDataDir 'state.json'
+$script:LegacyStatePath = Join-Path $script:CodexDir 'headroom-switch-state.json'
 
 if ($env:CLAUDE_CONFIG_DIR -and $env:CLAUDE_CONFIG_DIR.Trim()) {
     $script:ClaudeDir = $env:CLAUDE_CONFIG_DIR.Trim()
@@ -79,13 +90,43 @@ if ($env:CLAUDE_CONFIG_DIR -and $env:CLAUDE_CONFIG_DIR.Trim()) {
 }
 $script:ClaudeSettingsPath = Join-Path $script:ClaudeDir 'settings.json'
 
+function Backup-ConfigFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $name = Split-Path -Leaf $Path
+    if ($name -eq 'state.json' -or $name -eq 'headroom-switch-state.json') { return }
+    $dir = Split-Path -Parent $Path
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmssfff'
+    $bak = Join-Path $dir ($name + '.' + $stamp + '.bak')
+    if (Test-Path -LiteralPath $bak) {
+        $bak = Join-Path $dir ($name + '.' + $stamp + '.' + [guid]::NewGuid().ToString('n').Substring(0, 6) + '.bak')
+    }
+    Copy-Item -LiteralPath $Path -Destination $bak -Force
+    $old = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like ($name + '.*.bak') } |
+        Sort-Object LastWriteTime -Descending)
+    if ($old.Count -gt 5) {
+        $old | Select-Object -Skip 5 | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
-    $dir = Split-Path $Path
-    if ($dir -and -not (Test-Path $dir)) {
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
+    Backup-ConfigFile $Path
+    $tmp = $Path + '.' + [guid]::NewGuid().ToString('n') + '.tmp'
     $enc = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($Path, $Text, $enc)
+    [System.IO.File]::WriteAllText($tmp, $Text, $enc)
+    if (Test-Path -LiteralPath $Path) {
+        $swapBak = $Path + '.replace.bak'
+        [System.IO.File]::Replace($tmp, $Path, $swapBak)
+        Remove-Item -LiteralPath $swapBak -Force -ErrorAction SilentlyContinue
+    } else {
+        [System.IO.File]::Move($tmp, $Path)
+    }
 }
 
 function Read-Utf8([string]$Path) {
@@ -130,20 +171,21 @@ function Remove-ProviderLine([string]$Content) {
     return [regex]::Replace($Content, '(?m)^model_provider\s*=.*\r?\n?', '')
 }
 
-function Remove-HeadroomBlock([string]$Content) {
+function Remove-TomlTable([string]$Content, [string]$TableName) {
+    $esc = [regex]::Escape($TableName)
     return [regex]::Replace(
         $Content,
-        '(?m)^\[model_providers\.headroom\][ \t]*\r?\n(?:[ \t]*(?:name|base_url|wire_api|supports_websockets|requires_openai_auth)[ \t]*=.*\r?\n)*',
+        "(?m)^\[$esc\][ \t]*\r?\n(?:(?!\[).*\r?\n?)*",
         ''
     )
 }
 
+function Remove-HeadroomBlock([string]$Content) {
+    return Remove-TomlTable $Content 'model_providers.headroom'
+}
+
 function Remove-McpBlock([string]$Content) {
-    return [regex]::Replace(
-        $Content,
-        '(?m)^\[mcp_servers\.headroom\][ \t]*\r?\n(?:[ \t]*(?:command|args)[ \t]*=.*\r?\n)*',
-        ''
-    )
+    return Remove-TomlTable $Content 'mcp_servers.headroom'
 }
 
 function Get-HeadroomBlock([int]$Port, [string]$Nl) {
@@ -187,7 +229,7 @@ function Remove-OpenaiBaseLine([string]$Content) {
 
 function Test-CodexEnabled([string]$Content, [int]$Port) {
     $base = Read-OpenaiBaseUrl $Content
-    if ($base -and $base -match [regex]::Escape("127.0.0.1:$Port")) { return $true }
+    if ($base -and $base -match "127\.0\.0\.1:$Port(/|$)") { return $true }
     return ((Read-ModelProvider $Content) -eq 'headroom')
 }
 
@@ -234,7 +276,11 @@ function Read-JsonObject([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return New-Object PSObject
     }
-    try { return $raw | ConvertFrom-Json } catch { return New-Object PSObject }
+    try {
+        return $raw | ConvertFrom-Json
+    } catch {
+        throw "Refusing to write $Path — the file is not valid JSON. Restore a backup, then try again."
+    }
 }
 
 function Test-HasProp($Obj, [string]$Name) {
@@ -262,10 +308,14 @@ function Get-Note($Obj, [string]$Name) {
 
 
 function Test-ClaudeEnabled([int]$Port) {
-    $obj = Read-JsonObject $script:ClaudeSettingsPath
+    try {
+        $obj = Read-JsonObject $script:ClaudeSettingsPath
+    } catch {
+        return $false
+    }
     $envObj = Get-Note $obj 'env'
     $url = Get-Note $envObj 'ANTHROPIC_BASE_URL'
-    if ($url -and ("$url" -match [regex]::Escape("127.0.0.1:$Port"))) { return $true }
+    if ($url -and ("$url" -match "127\.0\.0\.1:$Port(/|$)")) { return $true }
     return $false
 }
 
@@ -402,17 +452,18 @@ function Get-ProfileHint([string]$Name) {
 function Get-DashboardUrl { return "http://127.0.0.1:$($script:Port)/dashboard" }
 
 function Read-AppState {
-    if (-not (Test-Path $script:StatePath)) { return }
+    $path = $script:StatePath
+    if (-not (Test-Path -LiteralPath $path) -and (Test-Path -LiteralPath $script:LegacyStatePath)) {
+        $path = $script:LegacyStatePath
+    }
+    if (-not (Test-Path -LiteralPath $path)) { return }
     try {
-        $s = Read-Utf8 $script:StatePath | ConvertFrom-Json
+        $s = Read-Utf8 $path | ConvertFrom-Json
         if ((Test-HasProp $s 'port') -and $s.port) {
             $script:Port = [int]$s.port
         }
         if (Test-HasProp $s 'previousProvider') {
             $script:PreviousProvider = $s.previousProvider
-        }
-        if (Test-HasProp $s 'hadProviderLine') {
-            $script:HadProviderLine = [bool]$s.hadProviderLine
         }
         if ((Test-HasProp $s 'proxyPid') -and $s.proxyPid) {
             $script:ProxyPid = [int]$s.proxyPid
@@ -445,7 +496,6 @@ function Write-AppState {
     $obj = [ordered]@{
         port                  = $script:Port
         previousProvider      = $script:PreviousProvider
-        hadProviderLine       = $script:HadProviderLine
         previousOpenaiBaseUrl = $script:PreviousOpenaiBaseUrl
         proxyPid              = $script:ProxyPid
         customHeadroom        = $script:CustomHeadroom
@@ -463,28 +513,38 @@ function Find-HeadroomExe {
     if ($script:CustomHeadroom -and (Test-Path -LiteralPath $script:CustomHeadroom)) {
         return $script:CustomHeadroom
     }
+    if ($script:HeadroomExeCache -and ((Get-Date) - $script:HeadroomExeCacheAt).TotalSeconds -lt 60) {
+        return $script:HeadroomExeCache
+    }
+    $found = $null
     $cmd = Get-Command headroom -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source) { return $cmd.Source }
-    $globs = @(
-        (Join-Path $env:USERPROFILE '.local\bin\headroom.exe'),
-        (Join-Path $env:USERPROFILE '.local\bin\headroom'),
-        (Join-Path $env:APPDATA 'Python\Python*\Scripts\headroom.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python*\Scripts\headroom.exe'),
-        (Join-Path $env:USERPROFILE '.local\share\uv\tools\*\*\headroom.exe'),
-        (Join-Path $env:LOCALAPPDATA 'uv\tools\*\*\headroom.exe'),
-        (Join-Path $env:USERPROFILE 'AppData\Roaming\uv\tools\*\*\headroom.exe')
-    )
-    foreach ($g in $globs) {
-        $hits = @(Get-Item -Path $g -ErrorAction SilentlyContinue)
-        if ($hits.Count -gt 0) { return $hits[0].FullName }
+    if ($cmd -and $cmd.Source) { $found = $cmd.Source }
+    if (-not $found) {
+        $globs = @(
+            (Join-Path $env:USERPROFILE '.local\bin\headroom.exe'),
+            (Join-Path $env:USERPROFILE '.local\bin\headroom'),
+            (Join-Path $env:APPDATA 'Python\Python*\Scripts\headroom.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python*\Scripts\headroom.exe'),
+            (Join-Path $env:USERPROFILE '.local\share\uv\tools\*\*\headroom.exe'),
+            (Join-Path $env:LOCALAPPDATA 'uv\tools\*\*\headroom.exe'),
+            (Join-Path $env:USERPROFILE 'AppData\Roaming\uv\tools\*\*\headroom.exe')
+        )
+        foreach ($g in $globs) {
+            $hits = @(Get-Item -Path $g -ErrorAction SilentlyContinue)
+            if ($hits.Count -gt 0) { $found = $hits[0].FullName; break }
+        }
     }
-    foreach ($py in @('py', 'python', 'python3')) {
-        try {
-            $which = & $py -c "import shutil; print(shutil.which('headroom') or '')" 2>$null
-            if ($which -and "$which".Trim()) { return "$which".Trim() }
-        } catch {}
+    if (-not $found) {
+        foreach ($py in @('py', 'python', 'python3')) {
+            try {
+                $which = & $py -c "import shutil; print(shutil.which('headroom') or '')" 2>$null
+                if ($which -and "$which".Trim()) { $found = "$which".Trim(); break }
+            } catch {}
+        }
     }
-    return $null
+    $script:HeadroomExeCache = $found
+    $script:HeadroomExeCacheAt = Get-Date
+    return $found
 }
 
 function Test-PortOpen([int]$Port) {
@@ -513,13 +573,18 @@ function Test-ProcessLooksLikeHeadroom([int]$ProcessId) {
         $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
         if (-not $p) { return $false }
         $blob = "$($p.Name) $($p.CommandLine)"
-        return ($blob -match 'headroom')
+        if ($blob -match '(?i)HeadroomSwitch') { return $true }
+        if ($blob -match '(?i)headroom\.exe') { return $true }
+        if ($blob -match '(?i)(["'']|\s|^)headroom(\.exe)?(["'']|\s|$)') { return $true }
+        return $false
     } catch { return $false }
 }
 
 function Stop-HeadroomProxy {
     if ($script:ProxyPid -gt 0) {
-        Stop-Process -Id $script:ProxyPid -Force -ErrorAction SilentlyContinue
+        if (Test-ProcessLooksLikeHeadroom $script:ProxyPid) {
+            Stop-Process -Id $script:ProxyPid -Force -ErrorAction SilentlyContinue
+        }
         $script:ProxyPid = 0
     }
     $listen = Get-ListeningPid $script:Port
@@ -590,7 +655,7 @@ $fontMono = New-Object System.Drawing.Font('Consolas', 8)
 $fontEyebrow = New-Object System.Drawing.Font('Segoe UI', 7.5)
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Headroom'
+$form.Text = 'Headroom Switch'
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -671,7 +736,7 @@ function New-GhostBtn([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H) {
 }
 
 $lblEyebrow = New-Lbl 'CODEX' $m 18 $cw 14 $fontEyebrow $Ui.Subtle
-$lblTitle = New-Lbl 'Headroom' $m 34 $cw 34 $fontTitle $Ui.Fg
+$lblTitle = New-Lbl 'Headroom Switch' $m 34 $cw 34 $fontTitle $Ui.Fg
 $lblSub = New-Lbl 'Direct to the model. Proxy is off.' $m 72 $cw 22 $fontSm $Ui.Muted
 
 $rowY = 106
@@ -915,7 +980,7 @@ function Update-ToggleVisual {
         $script:LastLampOn = $script:IsOn
         Write-LampImage
     }
-    if ($lblTitle.Text -ne 'Headroom') { $lblTitle.Text = 'Headroom' }
+    if ($lblTitle.Text -ne 'Headroom Switch') { $lblTitle.Text = 'Headroom Switch' }
     if ($script:TargetApp -eq 'claude') {
         $eye = 'CLAUDE  ·  EXPERIMENTAL'
         $sub = if ($script:IsOn) {
@@ -1003,11 +1068,9 @@ function Enable-CurrentAppConfig([string]$Bin) {
         $current = Read-ModelProvider $content
         if ($current -and $current -ne 'headroom') {
             $script:PreviousProvider = $current
-            $script:HadProviderLine = $true
         } elseif ($current -eq 'headroom') {
             # already on in file
         } else {
-            $script:HadProviderLine = $false
             if (-not $script:PreviousProvider) { $script:PreviousProvider = $null }
         }
         $existingBase = Read-OpenaiBaseUrl $content
@@ -1030,7 +1093,7 @@ function Invoke-TurnOn {
         Add-Log 'headroom.exe not found. Config written, proxy not started.'
         [void][System.Windows.Forms.MessageBox]::Show(
             "headroom.exe was not found (Explorer launches often miss PATH).`r`n`r`nOpen Settings and pick the binary.`r`nTypical locations: Python Scripts, or uv tools.`r`n`r`nApp config was still written.",
-            'Headroom'
+            'Headroom Switch'
         )
         Write-AppState
         Refresh-Status
@@ -1067,7 +1130,7 @@ function Invoke-Toggle {
         if ($script:IsOn) { Invoke-TurnOff } else { Invoke-TurnOn }
     } catch {
         Add-Log ('Error: ' + $_.Exception.Message)
-        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom')
+        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom Switch')
     } finally {
         $script:Busy = $false
         $lamp.Cursor = [System.Windows.Forms.Cursors]::Hand
@@ -1102,7 +1165,7 @@ function Apply-App([string]$Name) {
         Add-Log "Target app: $next"
     } catch {
         Add-Log ('Error: ' + $_.Exception.Message)
-        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom')
+        [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Headroom Switch')
     } finally {
         $script:Busy = $false
     }
@@ -1124,7 +1187,7 @@ $btnDash.Add_Click({
     if (-not (Test-PortOpen $script:Port)) {
         [void][System.Windows.Forms.MessageBox]::Show(
             'Proxy is not running. Turn the lamp on first, then open Dashboard.',
-            'Headroom'
+            'Headroom Switch'
         )
         return
     }
@@ -1133,7 +1196,7 @@ $btnDash.Add_Click({
 
 function Show-Settings {
     $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text = 'Settings'
+    $dlg.Text = "Settings  $($script:AppVersion)"
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.StartPosition = 'CenterParent'
     $dlg.ClientSize = New-Object System.Drawing.Size(360, 280)
@@ -1239,15 +1302,30 @@ function Show-Settings {
     $dlg.AcceptButton = $ok
 
     if ($dlg.ShowDialog($form) -eq 'OK') {
+        $oldPort = [int]$script:Port
         $p = 0
         if ([int]::TryParse($tbPort.Text.Trim(), [ref]$p) -and $p -gt 0 -and $p -lt 65536) {
-            $script:Port = $p
+            if ($p -ne $oldPort) {
+                $script:Port = $oldPort
+                if (Test-PortOpen $oldPort) { Stop-HeadroomProxy }
+                $script:Port = $p
+                if ($script:IsOn) {
+                    Add-Log "Port $oldPort → $p. Restarting proxy."
+                    [void](Start-HeadroomProxy)
+                }
+            }
+        } else {
+            [void][System.Windows.Forms.MessageBox]::Show(
+                'Port must be a number from 1 to 65535.',
+                'Headroom Switch'
+            )
         }
         $script:CustomHeadroom = $tbPath.Text.Trim()
+        $script:HeadroomExeCache = $null
         $script:CloseToTray = [bool]$rbTray.Checked
         Write-AppState
         Refresh-Status
-        Add-Log "Settings saved (port $($script:Port); X=$(if ($script:CloseToTray) { 'tray' } else { 'quit' }))"
+        Add-Log "Settings saved. Port $($script:Port)."
     }
 }
 
@@ -1263,7 +1341,7 @@ $g.FillEllipse($brush, 2, 4, 12, 8)
 $g.FillEllipse((New-Object System.Drawing.SolidBrush $Ui.Fg), 8, 4, 8, 8)
 $g.Dispose()
 $notify.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
-$notify.Text = 'Headroom'
+$notify.Text = "Headroom Switch $($script:AppVersion)"
 $notify.Visible = $true
 $form.Icon = $notify.Icon
 

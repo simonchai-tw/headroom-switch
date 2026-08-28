@@ -44,3 +44,8 @@ test("empty settings still enable", () => {
   assert.equal(anthropicBaseUrl(9000), "http://127.0.0.1:9000");
   assert.equal(isClaudeEnabled(text, 9000), true);
 });
+
+test("bad JSON must throw, not wipe the file", () => {
+  assert.throws(() => enableClaudeSettings("{ this is not json", 8787));
+  assert.throws(() => enableClaudeDesktop("{ this is not json"));
+});

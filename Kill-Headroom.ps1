@@ -1,8 +1,8 @@
 ﻿#requires -Version 5.1
 # Kill-Headroom.ps1 — stop Headroom Switch GUI + headroom proxy
-# Optional:  powershell -File Kill-Headroom.ps1 -RevertClaude
+# Optional:  powershell -File Kill-Headroom.ps1 -Revert
 
-param([switch]$RevertClaude)
+param([switch]$Revert, [switch]$RevertClaude)
 
 $ErrorActionPreference = 'SilentlyContinue'
 $self = $PID
@@ -13,10 +13,24 @@ function Stop-PidSafe([int]$ProcessId, [string]$Why) {
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
 }
 
-function Test-BlobHeadroom([string]$Blob) {
-    if ($Blob -match 'HeadroomSwitch') { return $true }
-    if ($Blob -match '(?i)headroom\.exe') { return $true }
-    if ($Blob -match '(?i)(["'']|\s|^)headroom(\.exe)?(["'']|\s|$)') { return $true }
+function Test-ExeIsHeadroom([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    return [bool]($Path -match '(?i)[\\/]headroom(\.exe)?$')
+}
+
+function Test-ProcHeadroom($p) {
+    if (-not $p) { return $false }
+    if ($p.ProcessId -eq $self) { return $false }
+    $name = [string]$p.Name
+    $exe = [string]$p.ExecutablePath
+    $cmd = [string]$p.CommandLine
+    if ($name -match '(?i)^HeadroomSwitch') { return $true }
+    if ($exe -match '(?i)HeadroomSwitch\.exe$') { return $true }
+    if (Test-ExeIsHeadroom $exe) { return $true }
+    if ($name -match '(?i)^headroom(\.exe)?$') { return $true }
+    if ($cmd -match '(?i)(?:^|[\\/''"\s])headroom\.exe(?:[''"]|\s|$)' -and $cmd -match '(?i)(?:^|\s)proxy(?:\s|$)') { return $true }
+    if ($name -match '(?i)powershell' -and $cmd -match '(?i)(-File|/File)\s+".*HeadroomSwitch\.ps1"') { return $true }
+    if ($name -match '(?i)powershell' -and $cmd -match '(?i)(-File|/File)\s+\S*HeadroomSwitch\.ps1') { return $true }
     return $false
 }
 
@@ -28,25 +42,25 @@ Get-Process -Name 'HeadroomSwitch','headroom' -ErrorAction SilentlyContinue | Fo
 
 $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
 foreach ($p in $procs) {
-    if ($p.ProcessId -eq $self) { continue }
-    $blob = "$($p.Name) $($p.CommandLine)"
-    if (Test-BlobHeadroom $blob) {
-        if (($p.Name -eq 'powershell.exe' -or $p.Name -eq 'pwsh.exe') -and ($blob -notmatch 'HeadroomSwitch')) { continue }
-        Stop-PidSafe $p.ProcessId $blob.Substring(0, [Math]::Min(120, $blob.Length))
+    if (Test-ProcHeadroom $p) {
+        Stop-PidSafe $p.ProcessId ("{0} {1}" -f $p.Name, $p.ExecutablePath)
     }
 }
 
 Start-Sleep -Milliseconds 400
 
 $ports = @(8787)
+$codexDir = if ($env:CODEX_HOME -and $env:CODEX_HOME.Trim()) { $env:CODEX_HOME.Trim() } else { Join-Path $env:USERPROFILE '.codex' }
 $statePaths = @(
     (Join-Path $env:LOCALAPPDATA 'HeadroomSwitch\state.json'),
-    (Join-Path $env:USERPROFILE '.codex\headroom-switch-state.json')
+    (Join-Path $codexDir 'headroom-switch-state.json')
 )
+$state = $null
 foreach ($statePath in $statePaths) {
-    if (Test-Path $statePath) {
+    if (Test-Path -LiteralPath $statePath) {
         try {
-            $s = Get-Content -Raw $statePath | ConvertFrom-Json
+            $s = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+            if (-not $state) { $state = $s }
             if ($s.port) { $ports += [int]$s.port }
         } catch {}
     }
@@ -54,27 +68,31 @@ foreach ($statePath in $statePaths) {
 $ports = $ports | Select-Object -Unique
 
 foreach ($port in $ports) {
-    $lines = netstat -ano -p tcp 2>$null | Select-String -Pattern ":$port\s+.*LISTENING"
+    $lines = netstat -ano 2>$null | Select-String -Pattern 'LISTENING'
     foreach ($line in $lines) {
-        if ($line.Line -match '\s(\d+)\s*$') {
+        $t = [string]$line.Line
+        if ($t -notmatch ":$port\s") { continue }
+        if ($t -match '\s(\d+)\s*$') {
             $listenPid = [int]$Matches[1]
             $wp = Get-CimInstance Win32_Process -Filter "ProcessId=$listenPid" -ErrorAction SilentlyContinue
-            $blob = "$($wp.Name) $($wp.CommandLine)"
-            if (Test-BlobHeadroom $blob) {
-                Stop-PidSafe $listenPid "LISTEN :$port $blob"
+            if (Test-ProcHeadroom $wp) {
+                Stop-PidSafe $listenPid "LISTEN :$port $($wp.Name)"
             } else {
-                Write-Host "skip PID $listenPid on :$port (not headroom): $blob"
+                Write-Host "skip PID $listenPid on :$port (not headroom): $($wp.Name) $($wp.ExecutablePath)"
             }
         }
     }
 }
 
-if ($RevertClaude) {
-    Write-Host '=== revert Claude env pointing at localhost ==='
+if ($Revert -or $RevertClaude) {
+    Write-Host '=== revert app config pointing at localhost ==='
     $settings = Join-Path $env:USERPROFILE '.claude\settings.json'
-    if (Test-Path $settings) {
+    if ($env:CLAUDE_CONFIG_DIR -and $env:CLAUDE_CONFIG_DIR.Trim()) {
+        $settings = Join-Path $env:CLAUDE_CONFIG_DIR.Trim() 'settings.json'
+    }
+    if (Test-Path -LiteralPath $settings) {
         try {
-            $obj = Get-Content -Raw $settings | ConvertFrom-Json
+            $obj = Get-Content -LiteralPath $settings -Raw | ConvertFrom-Json
             if ($obj.env -and $obj.env.ANTHROPIC_BASE_URL -match '127\.0\.0\.1:') {
                 $obj.env.PSObject.Properties.Remove('ANTHROPIC_BASE_URL')
                 $json = $obj | ConvertTo-Json -Depth 20
@@ -86,12 +104,16 @@ if ($RevertClaude) {
             Write-Host "could not edit $settings : $($_.Exception.Message)"
         }
     }
+    $cfg = Join-Path $codexDir 'config.toml'
+    if ($state -and (Test-Path -LiteralPath $cfg)) {
+        Write-Host "Codex config is at $cfg — restore a .bak if Headroom keys were left behind."
+    }
 }
 
 Write-Host '=== still alive? ==='
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ProcessId -ne $self -and (Test-BlobHeadroom ("$($_.Name) $($_.CommandLine)"))
+    Test-ProcHeadroom $_
 } | ForEach-Object {
-    Write-Host "STILL RUNNING $($_.ProcessId) $($_.Name) $($_.CommandLine)"
+    Write-Host "STILL RUNNING $($_.ProcessId) $($_.Name) $($_.ExecutablePath)"
 }
 Write-Host 'Done. Tray icon should be gone. If not, kill Headroom Switch from Task Manager (not X on the window).'

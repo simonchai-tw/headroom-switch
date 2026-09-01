@@ -60,8 +60,9 @@ On:
 
 Off:
 
-- restore the previous `model_provider` / `openai_base_url`
-- remove the Headroom blocks
+- restore the previous `model_provider` / `openai_base_url` (or drop them so new threads use the built-in provider)
+- keep `[model_providers.headroom]` without `base_url`, so old threads can resume
+- remove `[mcp_servers.headroom]` and `[headroom_switch]`
 - stop the proxy
 
 ### Claude (experimental)
@@ -80,9 +81,23 @@ Off:
 
 Other settings are left alone. Files are written as UTF-8 without BOM.
 
-The lamp is the on/off control. X follows Settings (default: quit and stop the
-proxy). Tray **Exit** always stops the proxy and quits. There is no “quit GUI,
-leave proxy running” path.
+The lamp is the on/off control. If **ChatGPT** or **Claude** is running, the
+lamp will not turn on or off — quit that app from its tray first. Switching
+Codex ↔ Claude is blocked while the lamp is on or either app is running.
+
+X follows Settings (default: quit and stop the proxy). If the lamp is on and
+the target app is still running, X stays in the tray instead of killing the
+proxy. Tray **Exit** is blocked in the same case. There is no “quit GUI, leave
+proxy running” path.
+
+The local proxy listens on `http://127.0.0.1:8787` with **no caller
+authentication**. Any process on the same machine can talk to it. Do not leave
+it running on an untrusted network. This is upstream Headroom’s bind, not a
+random path this switch invents.
+
+The **Updated** chip on the home page checks Headroom at launch (`--version` plus PyPI).
+Gray **Updated** means current. Green **Update** means a newer build is waiting.
+**Retry** means the check failed — click to try again. ChatGPT, Claude, or a live proxy blocks the upgrade.
 
 ## Get started
 
@@ -96,7 +111,8 @@ leave proxy running” path.
    For Codex you want `/v1/responses` or `codex_ws.units_total > 0`, not only `GET /v1/models`  
    For Claude you want Anthropic `/v1/messages` traffic. Zero requests means the GUI ignored env.
 
-Optional: double-click `Build-Exe.ps1` once to compile `HeadroomSwitch.exe`.
+Optional: double-click `Build-Exe.bat` once to compile `HeadroomSwitch.exe`.
+Do not run `Build-Exe.ps1` by itself — the Windows FileVersion is the numeric `0.3.0.0`.
 
 If the switch cannot find `headroom.exe` (common when launched from Explorer),
 open **Settings** and pick the path. Typical locations: Python `Scripts`, or uv tools.

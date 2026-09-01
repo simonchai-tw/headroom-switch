@@ -1,6 +1,6 @@
 {
   "name": "headroom-switch",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "One-click Headroom toggle for Codex and Claude (experimental) on Windows.",
@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/simonchai-tw/headroom-switch#readme",
   "scripts": {
-    "test": "node --test"
+    "test": "node scripts/run-verify.mjs"
   },
   "engines": {
     "node": ">=22"

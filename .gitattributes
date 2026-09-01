@@ -2,7 +2,3 @@
 *.ps1 text eol=crlf linguist-language=PowerShell linguist-detectable=true
 *.bat text eol=crlf
 *.vbs text eol=crlf
-
-# Node files are only the config-transform CI helper, not the product.
-lib/** linguist-documentation
-tests/** linguist-documentation

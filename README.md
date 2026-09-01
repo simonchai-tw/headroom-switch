@@ -1,17 +1,8 @@
 # Headroom Switch
 
-One-click Headroom on/off for **ChatGPT Codex** and **Claude (experimental)** on Windows.
+One-click Headroom on/off for ChatGPT Codex on Windows, with Claude support experimental.
 
-This is not Headroom. It is a small WinForms lamp that writes the config your
-app actually reads, then starts `headroom proxy`. Headroom™ is used here only
-to describe that origin. This project is not affiliated with, endorsed by, or
-sponsored by Headroom Labs.
-
-If you also use [cc-switch](https://github.com/farion1231/cc-switch), it can
-overwrite `~/.claude/settings.json` and wipe `ANTHROPIC_BASE_URL`. Upstream
-Headroom can put it back at runtime with `HEADROOM_CC_SWITCH_RECONCILE=1`
-(off by default). This switch does not replace cc-switch.
-
+Headroom Switch is a small WinForms companion for Headroom. It starts and stops the local Headroom proxy and updates only the configuration it owns, so you can switch between direct routing and local context compression without hand-editing config files.
 
 <p>
   <a href="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml"><img src="https://github.com/simonchai-tw/headroom-switch/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -20,118 +11,110 @@ Headroom can put it back at runtime with `HEADROOM_CC_SWITCH_RECONCILE=1`
   <img src="https://img.shields.io/badge/companion-headroomlabs--ai%2Fheadroom-7f9a86?style=flat-square" alt="Headroom companion">
 </p>
 
+[Download](#get-started) ·
+[Get started](#get-started) ·
 [Why](#why-this-exists) ·
 [How it works](#how-it-works) ·
-[Get started](#get-started) ·
 [Profiles](#profiles) ·
+[Claude](#claude-experimental) ·
 [Credits](#credits)
 
 ---
 
+## Get started
+
+### Recommended: use the EXE
+
+1. Install Headroom:
+   `pip install "headroom-ai[all]"`
+2. Download and open `HeadroomSwitch.exe`.
+3. Pick Codex (or Claude, experimental).
+4. Fully quit ChatGPT or Claude from the system tray.
+5. Leave the profile on **balanced** and click the lamp to turn Headroom on.
+6. Wait for the proxy/config status to become ready, then reopen the target app.
+7. Open **Dashboard** to confirm traffic is reaching Headroom.
+
+For Codex, look for `/v1/responses` traffic or `codex_ws.units_total > 0`, not only `GET /v1/models`.
+
+For Claude, look for Anthropic `/v1/messages` traffic. Zero requests means the GUI did not route through the proxy.
+
+If the switch cannot find `headroom.exe` (common when launched from Explorer), open **Settings** and choose it manually. Typical locations include Python `Scripts` and uv tools.
+
+### Run or build from source
+
+Clone this repository or use GitHub’s Source code download from a Release.
+
+- Double-click `HeadroomSwitch.bat` to run from source.
+- Use `HeadroomSwitch.vbs` instead if you do not want a console flash.
+- Double-click `Build-Exe.bat` to compile `HeadroomSwitch.exe`.
+
+Do not run `Build-Exe.ps1` by itself; the Windows FileVersion is generated as a numeric version such as `0.3.0.0` by the build wrapper.
+
 ## Why this exists
 
-Headroom compresses agent context before it hits the model. Codex GUI (ChatGPT
-desktop) does not pick up `headroom wrap` the same way the CLI does.
+Headroom compresses agent context before it reaches the model. The Codex CLI can be wrapped directly, but ChatGPT desktop does not pick up `headroom wrap` in the same way.
 
-Pointing only `model_provider` at localhost is not enough. ChatGPT desktop
-keeps using the built-in OpenAI provider and WebSocket path, so the proxy
-sees `GET /v1/models` and nothing else.
+Pointing only `model_provider` at localhost is not enough for ChatGPT desktop: it can continue using the built-in OpenAI provider and WebSocket path, leaving the proxy with only `GET /v1/models` traffic.
 
-Headroom Switch writes the same keys `headroom wrap codex` injects, including
-`openai_base_url`.
-
-Claude Desktop / Cowork is **experimental**. The lamp writes
-`ANTHROPIC_BASE_URL` in `%USERPROFILE%\.claude\settings.json` and adds a
-Headroom MCP server to `claude_desktop_config.json`. Cowork may still ignore
-env and talk to `api.anthropic.com` — use **Dashboard** after a turn to see if
-any requests arrived.
+Headroom Switch handles the desktop-specific configuration and proxy lifecycle for you.
 
 ## How it works
 
+The lamp is the on/off control.
+
+When you turn it on, Headroom Switch starts `headroom proxy`, verifies that the expected local listener is ready, and only then writes the routing configuration. When you turn it off, it restores the previous routing, removes the entries it owns, and stops the proxy.
+
+Configuration changes are ownership-scoped. Unrelated settings are left alone, existing values are preserved for restoration, and config files are backed up before normal writes. If safe restoration cannot be confirmed, the switch keeps the proxy running rather than leaving an app pointed at a dead localhost endpoint.
+
 ### Codex (supported)
 
-On:
+When on, the switch configures:
 
 - `openai_base_url = "http://127.0.0.1:8787/v1"`
 - `model_provider = "headroom"`
-- `[model_providers.headroom]` with `supports_websockets = true` and `requires_openai_auth = true`
+- a Headroom model-provider entry with Responses/WebSocket support
 - `[mcp_servers.headroom]` → `headroom mcp serve`
-- start `headroom proxy --port 8787 --mode token` (balanced)
+- the local Headroom proxy on the selected profile
 
-Off:
+When off, the previous `model_provider` and `openai_base_url` are restored (or removed if none existed), Switch-owned MCP/state entries are removed, and the proxy is stopped. A compatibility Headroom provider entry is kept without a localhost `base_url` so older Codex threads can still resume.
 
-- restore the previous `model_provider` / `openai_base_url` (or drop them so new threads use the built-in provider)
-- keep `[model_providers.headroom]` without `base_url`, so old threads can resume
-- remove `[mcp_servers.headroom]` and `[headroom_switch]`
-- stop the proxy
+### App switching and exit behavior
 
-### Claude (experimental)
+If the target app is running, the lamp will not turn on or off; fully quit the app from its tray first. Switching Codex ↔ Claude is also blocked while the lamp is on or either app is running.
 
-On:
+By default, closing the window quits Headroom Switch and stops the proxy. You can change X to **Minimize to tray** in Settings. If the target app is still actively using Headroom, exit is blocked rather than killing the proxy underneath it.
 
-- `env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"` in `~\.claude\settings.json`
-- `mcpServers.headroom` in `%APPDATA%\Claude\claude_desktop_config.json` (and the MSIX copy if present)
-- same local proxy
-
-Off:
-
-- restore the previous `ANTHROPIC_BASE_URL` (or drop the key)
-- remove the Headroom MCP entry
-- stop the proxy
-
-Other settings are left alone. Files are written as UTF-8 without BOM.
-
-The lamp is the on/off control. If **ChatGPT** or **Claude** is running, the
-lamp will not turn on or off — quit that app from its tray first. Switching
-Codex ↔ Claude is blocked while the lamp is on or either app is running.
-
-X follows Settings (default: quit and stop the proxy). If the lamp is on and
-the target app is still running, X stays in the tray instead of killing the
-proxy. Tray **Exit** is blocked in the same case. There is no “quit GUI, leave
-proxy running” path.
-
-The local proxy listens on `http://127.0.0.1:8787` with **no caller
-authentication**. Any process on the same machine can talk to it. Do not leave
-it running on an untrusted network. This is upstream Headroom’s bind, not a
-random path this switch invents.
-
-The **Updated** chip on the home page checks Headroom at launch (`--version` plus PyPI).
-Gray **Updated** means current. Green **Update** means a newer build is waiting.
-**Retry** means the check failed — click to try again. ChatGPT, Claude, or a live proxy blocks the upgrade.
-
-## Get started
-
-1. Install [Headroom](https://github.com/headroomlabs-ai/headroom): `pip install "headroom-ai[all]"`
-2. Clone this repo (or copy the files in the root)
-3. Double-click `HeadroomSwitch.bat`  
-   (`HeadroomSwitch.vbs` if you do not want a console flash)
-4. Pick **Codex** or **Claude**, turn the lamp on with **balanced**
-5. Fully quit the target app from the system tray, then open it again
-6. Click **Dashboard** (`http://127.0.0.1:8787/dashboard`)  
-   For Codex you want `/v1/responses` or `codex_ws.units_total > 0`, not only `GET /v1/models`  
-   For Claude you want Anthropic `/v1/messages` traffic. Zero requests means the GUI ignored env.
-
-Optional: double-click `Build-Exe.bat` once to compile `HeadroomSwitch.exe`.
-Do not run `Build-Exe.ps1` by itself — the Windows FileVersion is the numeric `0.3.0.0`.
-
-If the switch cannot find `headroom.exe` (common when launched from Explorer),
-open **Settings** and pick the path. Typical locations: Python `Scripts`, or uv tools.
+The **Updated** chip checks the installed Headroom version against PyPI at launch. **Updated** means current, **Update** means a newer Headroom build is available, and **Retry** means the check failed. ChatGPT, Claude, or a live proxy blocks an upgrade.
 
 ## Profiles
 
 | Profile | Proxy command | Meaning |
 | --- | --- | --- |
-| `speed` | `--mode cache` | Cache-first. Almost no compression. |
-| `balanced` (default) | `--mode token` | Actual compression. Use this. |
-| `maximum` | `--mode token --no-ccr` | Most savings. May drop detail. |
+| `speed` | `--mode cache` | Cache-first; almost no compression. |
+| `balanced` (default) | `--mode token` | Normal token compression. Recommended. |
+| `maximum` | `--mode token --no-ccr` | More aggressive token mode; may drop detail. |
 
-Changing profile restarts the proxy. You do not need to restart the app for that.
+Changing profile restarts the proxy. The target app itself does not need to be restarted just for a profile change.
+
+## Claude (experimental)
+
+Claude Desktop / Cowork support is experimental.
+
+When enabled, the switch writes `ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"` in `~/.claude/settings.json` and adds a Headroom MCP server to `claude_desktop_config.json` (including the MSIX copy when present). On disable, the previous base URL is restored and the Switch-owned MCP entry is removed.
+
+Cowork may still ignore the environment setting and connect directly to `api.anthropic.com`. Use Dashboard after a turn to verify that requests actually reached Headroom.
+
+Tools that rewrite Claude proxy or configuration settings can overwrite `~/.claude/settings.json` or remove `ANTHROPIC_BASE_URL`. Configuration switchers such as [cc-switch](https://github.com/farion1231/cc-switch) are one example. Upstream Headroom can reconcile this kind of overwrite at runtime with `HEADROOM_CC_SWITCH_RECONCILE=1` (off by default).
+
+## Local proxy
+
+The proxy listens on `127.0.0.1` and Headroom Switch does not add caller authentication. Other processes on the same Windows machine can therefore talk to the local proxy. Do not expose the proxy port beyond localhost, and use it only on a machine you trust.
 
 ## Credits
 
-Compression is done by [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom)
-(Apache-2.0, Headroom Contributors). Install it separately. This repository only
-toggles app config and starts/stops the local proxy.
+Compression is provided by [headroomlabs-ai/headroom](https://github.com/headroomlabs-ai/headroom) (Apache-2.0, Headroom Contributors) and is installed separately. Headroom Switch only manages the desktop configuration and local proxy lifecycle.
+
+Headroom™ is referenced only to identify the upstream project. Headroom Switch is not affiliated with, endorsed by, or sponsored by Headroom Labs.
 
 See [NOTICE](NOTICE).
 
